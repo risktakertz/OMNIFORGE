@@ -38,11 +38,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Build (tests use the built CLI)
+        run: pnpm build
+
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
 
       - name: E2E (built CLI acceptance)
         run: pnpm e2e

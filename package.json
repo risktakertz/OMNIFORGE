@@ -19,7 +19,7 @@
     "build": "turbo run build",
     "e2e": "node tests/e2e/run.mjs",
     "doctor": "node apps/cli/dist/index.js doctor",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm e2e",
+    "verify": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm e2e",
     "gen:skills": "node scripts/gen-skills.mjs"
   },
   "devDependencies": {
