@@ -33,6 +33,8 @@ export interface PlanAnalysisInput {
   expectedArtifacts: Plan["expectedArtifacts"];
   confidentiality?: Plan["confidentiality"];
   allowedTools?: string[];
+  /** injectable sandbox probe (tests); defaults to the real host probe */
+  probeSandbox?: (bin: string, args: string[]) => { status: number | null };
 }
 
 /** §9.2 authorization gate — hard refusals before anything else happens. */
@@ -60,7 +62,7 @@ export function planAnalysis(input: PlanAnalysisInput): Plan {
   }
   // §9.4: binaries/archives are untrusted — inspection requires a container
   if (input.format === "binary" || input.format === "package") {
-    const sandbox = resolveSandbox();
+    const sandbox = resolveSandbox(input.probeSandbox);
     if (sandbox.mode !== "container") {
       throw new OmniforgeError(
         "E_SANDBOX_UNAVAILABLE",

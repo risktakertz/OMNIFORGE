@@ -28,11 +28,32 @@ describe("authorization gate (§9.2)", () => {
     ).toThrow(/E_AUTHORIZATION_REQUIRED/);
   });
 
-  it("refuses binary/package analysis without a container sandbox (§9.4)", () => {
-    // this host has no docker/podman → honest typed refusal, not host inspection
+  it("refuses binary/package analysis when no container sandbox exists (§9.4) — deterministic via injected probe", () => {
+    const noRuntime = () => ({ status: 1 });
     expect(() =>
-      planAnalysis({ target: "vendor.dll I own", format: "binary", rightsBasis: "owner", rightsEvidence: "written authorization on file", expectedArtifacts: ["analysis-report"] })
+      planAnalysis({
+        target: "vendor.dll I own",
+        format: "binary",
+        rightsBasis: "owner",
+        rightsEvidence: "written authorization on file",
+        expectedArtifacts: ["analysis-report"],
+        probeSandbox: noRuntime,
+      })
     ).toThrow(/E_SANDBOX_UNAVAILABLE/);
+  });
+
+  it("accepts binary analysis ONLY when a container runtime is actually available (host-realistic)", () => {
+    const withDocker = (bin: string) => ({ status: bin === "docker" ? 0 : 1 });
+    const plan = planAnalysis({
+      target: "vendor.dll I own",
+      format: "binary",
+      rightsBasis: "owner",
+      rightsEvidence: "written authorization on file",
+      expectedArtifacts: ["analysis-report"],
+      probeSandbox: withDocker,
+    });
+    expect(plan.sandboxRequired).toBe(true);
+    expect(plan.riskNotes.join(" ")).toMatch(/container sandbox/);
   });
 
   it("accepts a fully authorized source-repo analysis", () => {
