@@ -16,7 +16,7 @@
  *     exhaustion (E_REPAIR_BUDGET_EXCEEDED), or a missing backend
  *     (E_MODEL_UNAVAILABLE) — actionable blockers instead of loops.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { OmniforgeError, type ProductBlueprint, type ValidationResult } from "@omniforge/shared-types";
 import { classifyFailure, runProjectTests, verifyWorkspace, type FailureClassification } from "@omniforge/verification";
@@ -65,7 +65,7 @@ const FIXERS: Array<{ when: (cls: FailureClassification, failures: string[], ctx
     when: (_cls, failures, ctx) =>
       failures.some((f) => /dist\/index\.html missing|dist\/styles\.css missing|missing link targets/i.test(f)) &&
       existsSync(join(ctx.workspacePath, "scripts", "render.mjs")),
-    fix: (ctx, input) => {
+    fix: (ctx, _input) => {
       const cfgPath = join(ctx.workspacePath, "project.config.json");
       const hasConfig = existsSync(cfgPath);
       const r = runGoverned("node", ["scripts/render.mjs"], ctx.workspacePath, 60_000);
@@ -81,7 +81,7 @@ const FIXERS: Array<{ when: (cls: FailureClassification, failures: string[], ctx
     // project's own suite failed with an assertion — try the workspace's own
     // documented fix entrypoint (fix.mjs) if the template shipped one
     when: (cls, failures) => cls.category === "test-logic" && failures.some((f) => /tests failed/i.test(f)),
-    fix: (ctx, input) => {
+    fix: (ctx, _input) => {
       const fixer = join(ctx.workspacePath, "scripts", "fix.mjs");
       if (!existsSync(fixer)) return null;
       const r = runGoverned("node", ["scripts/fix.mjs"], ctx.workspacePath, 60_000);

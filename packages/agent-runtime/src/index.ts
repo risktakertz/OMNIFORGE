@@ -15,7 +15,7 @@
  *    task succeeds — doctor/health evidence, never assumptions.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OmniforgeError, type ModelCapability } from "@omniforge/shared-types";

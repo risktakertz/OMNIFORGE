@@ -102,7 +102,6 @@ export async function executeDag(
 ): Promise<{ state: DagState; outcomes: Record<string, TaskOutcome>; allPassed: boolean }> {
   const existing = loadDagState(ctx);
   const state = existing && existing.tasks ? existing : freshState(plan);
-  const byId = new Map(plan.nodes.map((n) => [n.id, n]));
   const outcomes: Record<string, TaskOutcome> = {};
   const concurrency = Math.max(1, opts.concurrency ?? 1);
 

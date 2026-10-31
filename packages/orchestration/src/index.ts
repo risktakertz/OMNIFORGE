@@ -250,7 +250,6 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
 const GRAPH_PHASE_TASKS = ["t:intake", "t:permission-check", "t:interpret", "t:research", "t:specify", "t:select", "t:plan"];
 
 export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | FileCheckpointSaver) {
-  const logger = config.logger ?? createLogger(undefined, "warn");
   const journalOf = (state: OFState): RunJournal => new RunJournal(config.runsRoot, state.runId || "pending-run");
 
   const failNode = config.failOnceAt;
@@ -412,7 +411,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           journal.append("execute", "warn", "no render step or suite; recorded honestly as scaffold-only");
           return { status: "passed", message: "scaffold-only (no executable step)", artifacts: [], evidence: [] };
         },
-        verify: async (node: TaskNode) => {
+        verify: async () => {
           const gateway = new ToolGateway(defaultContext([state.workspacePath]));
           const backend = new LocalNodeBackend(gateway);
           const result = await verifyWorkspace({ workspacePath: state.workspacePath, blueprint: state.blueprint!, backend });

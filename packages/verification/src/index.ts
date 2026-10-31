@@ -71,7 +71,7 @@ function listFiles(dir: string, base = ""): string[] {
  */
 export function runProjectTests(
   workspacePath: string,
-  backend: CodingBackend
+  _backend: CodingBackend
 ): { status: Check["status"]; message: string; command?: string; logPath?: string } {
   const pkgPath = join(workspacePath, "package.json");
   const pkg = readSafe(pkgPath);
