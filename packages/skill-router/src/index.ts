@@ -32,6 +32,7 @@ const RE_BOOKING = /\b(book|books|booking|appointments?|reservations?|scheduling
 const RE_DASHBOARD = /\b(dashboards?|metrics|analytics|kpis?|admin panels?)\b/;
 
 const TEMPLATE_RULES: TemplateRule[] = [
+  { template: "generator:agent-mvp", when: (i) => i.productKinds.includes("ai") && i.domainHints.includes("coding-agent"), why: "cloud coding agent maps to the original agent-MVP generator (composable runtime, never a copied or renamed template)" },
   { template: "template:phaser-2d", when: (i) => i.productKinds.includes("game-2d"), why: "browser 2D game maps to the Phaser template" },
   { template: "template:godot-native", when: (i) => i.productKinds.includes("game-3d"), why: "engine-native 3D maps to the Godot template" },
   { template: "template:expo-mobile", when: (i) => i.productKinds.includes("mobile"), why: "mobile kind maps to the Expo template" },
@@ -83,6 +84,14 @@ export function routeIntent(
   registry.ensure();
   const excluded: Array<{ capabilityId: string; reason: string }> = [];
   const missing: string[] = [];
+
+  if (intent.novelty === "novel") {
+    // a novel request is a typed gap (NEEDS_MODEL), never a silent template map
+    throw new OmniforgeError("E_INTENT_NOVEL", "novel request matches no known capability — model-assisted interpretation required", {
+      kinds: intent.productKinds,
+      hints: intent.domainHints,
+    });
+  }
 
   /* 1. template resolution (deterministic rules, first match wins) */
   const rule = TEMPLATE_RULES.find((r) => r.when(intent));

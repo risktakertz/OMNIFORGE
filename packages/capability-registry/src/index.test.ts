@@ -64,12 +64,15 @@ describe("capability registry", () => {
     }
   });
 
-  it("registry exposes templates as verified capabilities", () => {
+  it("templates are honestly 'configured' (self-test declared), never auto-'verified'", () => {
     const repoTemplates = fileURLToPath(new URL("../../../templates", import.meta.url));
     const reg = new CapabilityRegistry([root], repoTemplates);
     const caps = reg.list();
-    expect(caps.some((c) => c.id === "template:static-business" && c.availability === "verified")).toBe(true);
-    expect(reg.has("template:static-business")).toBe(true);
+    const t = caps.find((c) => c.id === "template:static-business");
+    expect(t?.availability).toBe("configured"); // presence alone is not verification
+    expect(t?.healthCheck).toMatch(/self-test-declared/);
+    expect(reg.has("generator:agent-mvp")).toBe(true);
+    expect(reg.get("generator:agent-mvp").availability).toBe("configured");
   });
 
   it("missing capability get throws typed error", () => {

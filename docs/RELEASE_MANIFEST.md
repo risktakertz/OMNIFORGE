@@ -18,7 +18,17 @@ points to where the evidence lives.
 | LangGraph pipeline with durable file checkpoints + resume | `packages/orchestration`; `tests/orchestration` (resume verified by tests) |
 | Export with provenance (tar.gz, provenance.json, sha256) | `packages/workspace-manager`; unit tests |
 | 11 templates with self-tests (static-business, commerce-lite, booking-lite, dashboard-lite, api, astro-business, next-web, phaser-2d, expo-mobile, tauri-desktop, godot-native) | `templates/*/tests/`; executed during `create` and `omniforge test` |
-| 158 passing tests | `pnpm test` (vitest run) at release time |
+| DAG-governed execution: plan drives real work (`executeDag`, durable `dag-state.json`, per-task timeouts/retries, idempotent resume) | `packages/orchestration/src/dag.ts`; `tests/orchestration/autonomy.test.ts` |
+| Bounded repair engine consuming real failure evidence (deterministic fixers, regression vs original criteria, stop conditions) | `packages/orchestration/src/repair.ts`; adversarial paths in package tests |
+| Verification contract v2 (persisted original criteria; critical non-runs block PASS; independent verifier compares original blueprint vs evidence) | `packages/verification`; `apps/cli` create/modify flows |
+| CodingBackend v2: real OpenCode adapter (`opencode run`, argv, smoke gate), cross-platform detection, argv-allowlisted local backend | `packages/agent-runtime`; unit tests |
+| Novelty gate: unmatched prompts yield typed E_INTENT_NOVEL (NEEDS_MODEL), never a silent template map; coding-agent domain recognition | `packages/intent-engine`; `tests/routing-evals` |
+| Agent-MVP composer (decisive E2 scenario): original runnable coding agent from one sentence, own passing suite, exportable | `packages/orchestration/src/agent-mvp.ts`; `tests/acceptance` E2 case |
+| Executable skill entrypoints (testing skill runs through the gateway with typed JSON I/O) | `skills/testing/scripts/run-project-tests.mjs`; `packages/orchestration/src/skills.ts`; `tests/orchestration/autonomy.test.ts` |
+| Enforced execution policy: sandbox probe (docker/podman), host allowlist, argv-only, E_SANDBOX_UNAVAILABLE; scoped approvals (action+targets+run) | `packages/tool-gateway`; gateway tests |
+| Cross-process resume with exactly-once effects | `tests/orchestration/resume-child.mjs` + autonomy tests |
+| Real browser E2E (chromium: render, nav, form submit, responsive) | `tests/e2e/browser.e2e.mjs`; `pnpm e2e` |
+| 174+ passing tests | `pnpm test` (vitest run) at release time |
 | Lean CI (push/PR, docs excluded) | `.github/workflows/ci.yml` |
 
 ## Configured, not operationally verified

@@ -25,7 +25,9 @@ const SECRET_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g, label: "github-token" },
   { re: /\bsk-[A-Za-z0-9_-]{16,}\b/g, label: "api-key" },
   { re: /\bAKIA[0-9A-Z]{16}\b/g, label: "aws-key" },
-  { re: /(?:api[_-]?key|secret|password|token)\s*[:=]\s*["']?[^\s"',;)]{8,}/gi, label: "kv-secret" },
+  // \b stops variable names like "noToken"; [ \t]* keeps the match on one
+  // line so multi-line .env.example placeholders never false-positive
+  { re: /\b(?:api[_-]?key|secret|password|token)[ \t]*[:=][ \t]*["']?[^\s"',;)\n]{8,}/gi, label: "kv-secret" },
   { re: /\bBearer\s+[A-Za-z0-9._-]{16,}\b/gi, label: "bearer" },
 ];
 

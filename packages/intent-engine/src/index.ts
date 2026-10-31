@@ -11,14 +11,14 @@ import { newId, tokenize, nowIso } from "@omniforge/utils";
 
 const KIND_KEYWORDS: Array<{ kind: ProductKind; words: string[] }> = [
   { kind: "website", words: ["website", "web site", "webpage", "web page", "landing page", "portfolio", "homepage", "blog", "tovuti", "wavuti", "ukurasa"] },
-  { kind: "web-app", words: ["web app", "web application", "management system", "portal", "dashboard", "admin panel", "crm", "booking system", "school management", "system ya", "mfumo", "dashibodi"] },
+  { kind: "web-app", words: ["web app", "web application", "management system", "portal", "dashboard", "admin panel", "crm", "booking system", "school management", "system ya", "mfumo", "dashibodi", "book", "books", "booking", "appointments", "appointment", "reservation", "reservations", "scheduling"] },
   { kind: "saas", words: ["saas", "subscription platform", "multi-tenant", "sell to shops", "white-label"] },
   { kind: "mobile", words: ["android", "ios app", "mobile app", "phone app", "react native", "apk", "app ya simu", "programu ya simu"] },
   { kind: "desktop", words: ["desktop app", "windows app", "mac app", "linux app", "installer", "desktop application"] },
   { kind: "api", words: ["api", "rest api", "graphql", "backend service", "endpoint", "microservice"] },
   { kind: "game-2d", words: ["2d game", "2d racing", "racing game", "platformer", "space shooter", "shooter", "puzzle game", "arcade", "game in the browser", "mchezo"] },
   { kind: "game-3d", words: ["3d game", "3d adventure", "open world", "fps", "first person", "3d"] },
-  { kind: "ai", words: ["ai-powered", "chatbot", "customer support app with ai", "machine learning", "ai assistant", "llm"] },
+  { kind: "ai", words: ["ai-powered", "chatbot", "customer support app with ai", "machine learning", "ai assistant", "llm", "coding agent", "ai coding", "code assistant", "coding assistant", "ai agent", "agent like claude", "claude code", "cloud agent"] },
   { kind: "automation", words: ["automation", "automated", "workflow", "reminder system", "integrate", "zapier-like", "notification system"] },
 ];
 
@@ -83,6 +83,9 @@ const KIND_ASSUMPTIONS: Record<ProductKind, Array<{ text: string; confidence: nu
   automation: [
     { text: "All external sending runs in mock/sandbox mode until explicitly approved", confidence: 0.95 },
   ],
+  other: [
+    { text: "Novel domain: interpretation requires an authorized model backend; nothing is fabricated meanwhile", confidence: 0.9 },
+  ],
 };
 
 function matchesAny(haystack: string, words: string[]): boolean {
@@ -95,21 +98,39 @@ function detectLocale(request: string): "en" | "sw" {
   return hits >= 1 ? "sw" : "en";
 }
 
-function detectKinds(request: string): ProductKind[] {
+const GENERIC_PRODUCT_NOUNS =
+  /\b(site|page|webpage|app|application|system|platform|tool|portal|service|dashboard|tovuti|ukurasa|mfumo|programu)\b/;
+
+function detectKinds(request: string): { kinds: ProductKind[]; hints: string[] } {
   const lower = request.toLowerCase();
   const kinds: ProductKind[] = [];
+  const hints: string[] = [];
   for (const { kind, words } of KIND_KEYWORDS) {
     if (matchesAny(lower, words)) kinds.push(kind);
   }
+  // domain hints: recognized sub-domains that change architecture (e.g. the
+  // decisive cloud-coding-agent scenario) without hardcoding a template
+  if (/\b(coding agent|coding assistant|ai coding|claude code|code assistant|agent like claude)\b/.test(lower)) {
+    hints.push("coding-agent");
+  }
+  if (/\b(github|repository|repo)\b/.test(lower)) hints.push("github-integration");
+  if (/\b(resume|checkpoint|interrupt)\b/.test(lower)) hints.push("checkpoint-resume");
+
   // disambiguation: "3d" implies game-3d even if the word game is implicit
-  if (kinds.length === 0) {
-    if (/\b(shop|store|duka|commerce|amazon|market)\b/.test(lower)) return ["web-app"];
-    return ["website"];
-  }
   if (kinds.includes("game-3d") && kinds.includes("game-2d")) {
-    return kinds.filter((k) => k !== "game-2d");
+    return { kinds: kinds.filter((k) => k !== "game-2d"), hints };
   }
-  return kinds;
+  if (kinds.length > 0) return { kinds, hints };
+
+  // novelty gate: an unmatched request must NOT silently become a bakery
+  // website or generic REST scaffold. Generic product nouns allow a LOW-
+  // confidence inference (recorded as an assumption); anything else is novel.
+  if (GENERIC_PRODUCT_NOUNS.test(lower)) {
+    if (/\b(shop|store|duka|commerce|amazon|market)\b/.test(lower)) return { kinds: ["web-app"], hints };
+    if (/\b(app|application|system|platform|portal|tool|mfumo|programu)\b/.test(lower)) return { kinds: ["web-app"], hints };
+    return { kinds: ["website"], hints };
+  }
+  return { kinds: ["other"], hints: [...hints, "novel-domain"] };
 }
 
 function detectOperation(request: string): OperationKind {
@@ -171,7 +192,17 @@ function detectUnknowns(request: string, kinds: ProductKind[]): Intent["unknowns
   if (kinds.includes("game-3d")) {
     unknowns.push({ question: "Is the Godot engine installed locally for validation and export?", impact: "material" });
   }
-  return unknowns.slice(0, 5);
+  if (kinds.includes("ai") && /(coding agent|claude code|ai coding|code assistant|agent like claude)/.test(lower)) {
+    unknowns.push({
+      question: "Live AI behavior needs a model provider credential — generate the runnable MVP with the deterministic planner and leave the model adapter configurable?",
+      impact: "material",
+    });
+    unknowns.push({
+      question: "GitHub integration needs a token with repo scope at runtime — ship adapter gated on GITHUB_TOKEN being present?",
+      impact: "material",
+    });
+  }
+  return unknowns.slice(0, 6);
 }
 
 export interface ParseOptions {
@@ -187,12 +218,21 @@ export function parseRequest(request: string, opts: ParseOptions = {}): Intent {
   if (trimmed.length < 3) {
     throw new OmniforgeError("E_INTENT_UNCLEAR", "request is too short to interpret", { request });
   }
-  const kinds = detectKinds(trimmed);
+  const { kinds, hints } = detectKinds(trimmed);
+  const novel = kinds.includes("other");
   const operation = detectOperation(trimmed);
   const locale = detectLocale(trimmed);
   const platforms = detectPlatforms(trimmed, kinds);
   const explicitRequirements = extractRequirements(trimmed);
   const inferredAssumptions = kinds.flatMap((k) => KIND_ASSUMPTIONS[k] ?? []);
+  // generic-noun inference without a real kind match is low-confidence and
+  // says so — it never masquerades as a confident interpretation
+  if (!novel && kinds.length === 1 && !(trimmed.toLowerCase().match(new RegExp(KIND_KEYWORDS.map((k) => k.words.join("|")).join("|"))))) {
+    inferredAssumptions.push({
+      text: `Domain inferred from generic wording ("${kinds[0]}") — confirm the intended scope`,
+      confidence: 0.4,
+    });
+  }
   const constraints: string[] = [];
   if (/(no budget|zero budget|free|bila malipo|ghali)/.test(trimmed.toLowerCase())) {
     constraints.push("free-first: no paid services without explicit approval");
@@ -200,6 +240,12 @@ export function parseRequest(request: string, opts: ParseOptions = {}): Intent {
   if (opts.resumeOf) constraints.push(`resume-of:${opts.resumeOf}`);
 
   const unknowns = detectUnknowns(trimmed, kinds);
+  if (novel) {
+    unknowns.unshift({
+      question: "No known capability matches this domain — configure an authorized model backend for model-assisted interpretation, or rephrase with a known product type. Proceed as novel request?",
+      impact: "blocking",
+    });
+  }
   if (domainWords(trimmed).length > 0 && operation === "create") {
     for (const w of domainWords(trimmed).slice(0, 3)) {
       // keep high-signal domain words as soft requirements
@@ -220,6 +266,9 @@ export function parseRequest(request: string, opts: ParseOptions = {}): Intent {
     unknowns,
     permissions: opts.permissions ?? [],
     createdAt: nowIso(),
+    novelty: novel ? "novel" : "known",
+    interpreter: "deterministic",
+    domainHints: hints,
   });
   return intent;
 }

@@ -20,6 +20,8 @@ export interface SkillMeta {
   path: string;
   license?: string;
   allowedTools?: string[];
+  /** relative path to the executable entrypoint (scripts/<name>.mjs), if declared */
+  entrypoint?: string;
   metadata?: Record<string, unknown>;
   validationErrors: string[];
 }
@@ -45,6 +47,17 @@ function readSkillFile(path: string): { frontmatter: Record<string, unknown>; bo
 
 function validateSkill(meta: SkillMeta, dir: string, body: string): string[] {
   const errors: string[] = [];
+  // executable entrypoint (mission C3): a skill may declare an actual
+  // invocation entrypoint. Declared but missing => blocked, never simulated.
+  const entrypoint = meta.metadata?.entrypoint;
+  if (entrypoint !== undefined) {
+    const ep = String(entrypoint);
+    if (!/^scripts\/[A-Za-z0-9._-]+\.mjs$/.test(ep)) {
+      errors.push(`entrypoint must reference scripts/<name>.mjs (got "${ep}")`);
+    } else if (!existsSync(join(dir, ep))) {
+      errors.push(`declared entrypoint missing: ${ep}`);
+    }
+  }
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(meta.name)) {
     errors.push(`name must be lowercase hyphen-quine (got "${meta.name}")`);
   }
@@ -100,6 +113,7 @@ export function scanSkillDirs(dirs: string[]): ScanResult {
           description: String(parsed.frontmatter.description ?? ""),
           path: dir,
           ...(typeof parsed.frontmatter.license === "string" ? { license: parsed.frontmatter.license } : {}),
+          ...(parsed.frontmatter.entrypoint ? { entrypoint: String(parsed.frontmatter.entrypoint) } : {}),
           ...(parsed.frontmatter["allowed-tools"] ? { allowedTools: String(parsed.frontmatter["allowed-tools"]).split(",").map((s) => s.trim()) } : {}),
           metadata: parsed.frontmatter,
           validationErrors: [],
@@ -134,7 +148,9 @@ export function skillToCapability(meta: SkillMeta): CapabilityT {
     availability: meta.validationErrors.length === 0 ? "configured" : "blocked",
     risk: "low",
     cost: (meta.metadata?.cost as CapabilityT["cost"]) ?? "free",
-    healthCheck: "registry:frontmatter-valid",
+    healthCheck: meta.metadata?.entrypoint
+      ? `skill:entrypoint ${String(meta.metadata.entrypoint)} (executed with typed JSON stdin/stdout under the gateway)`
+      : "registry:frontmatter-valid",
   });
 }
 
@@ -145,6 +161,10 @@ export function templateCapabilities(templatesRoot: string): CapabilityT[] {
     const dir = join(templatesRoot, entry);
     if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue;
     if (!existsSync(join(dir, "package.json"))) continue;
+    // honest availability: template presence alone is NOT verification. A
+    // template is "configured" until its own suite has been observed passing
+    // (the repo's test suite records that evidence on every run).
+    const hasSelfTest = existsSync(join(dir, "tests")) && readdirSync(join(dir, "tests")).some((f) => f.endsWith(".test.mjs"));
     caps.push(
       Capability.parse({
         id: `template:${entry}`,
@@ -152,14 +172,40 @@ export function templateCapabilities(templatesRoot: string): CapabilityT[] {
         source: relative(process.cwd(), dir) || dir,
         version: "0.1.0",
         capabilities: [`scaffold-${entry}`],
-        availability: "verified",
+        availability: hasSelfTest ? "configured" : "untested",
         risk: "low",
         cost: "free",
-        healthCheck: "template:structure-tested",
+        healthCheck: hasSelfTest ? "template:self-test-declared (runs in repo suite)" : "none",
       })
     );
   }
   return caps;
+}
+
+/**
+ * Built-in generators (composable project factories — not copied templates).
+ * Availability is honest: "configured" until the acceptance suite observes a
+ * real generation + passing tests on this revision.
+ */
+export function generatorCapabilities(): CapabilityT[] {
+  return [
+    Capability.parse({
+      id: "generator:agent-mvp",
+      kind: "tool",
+      source: "packages/orchestration/src/agent-mvp.ts",
+      version: "0.1.0",
+      capabilities: ["compose-agent-mvp", "cli-agent-loop", "checkpoint-resume", "github-adapter", "allowlist-sandbox"],
+      inputSchemaRef: "omniforge://schemas/project-intent",
+      outputSchemaRef: "omniforge://schemas/workspace",
+      requirements: ["node >= 20"],
+      dependencies: [],
+      conflicts: [],
+      availability: "configured",
+      risk: "low",
+      cost: "free",
+      healthCheck: "acceptance:e2e-agent-mvp (repo suite observes generation + tests)",
+    }),
+  ];
 }
 
 export class CapabilityRegistry {
@@ -179,6 +225,9 @@ export class CapabilityRegistry {
       for (const t of templateCapabilities(this.templatesRoot)) {
         this.byId.set(t.id, t);
       }
+    }
+    for (const g of generatorCapabilities()) {
+      this.byId.set(g.id, g);
     }
     this.lastScan = result;
     return result;
@@ -211,6 +260,13 @@ export class CapabilityRegistry {
   issues(): SkillIssue[] {
     this.ensure();
     return this.lastScan?.issues ?? [];
+  }
+
+  /** Relative entrypoint path for a skill, or null when it has none. */
+  entrypointOf(id: string): string | null {
+    this.ensure();
+    const meta = this.lastScan?.skills.find((sk) => `skill:${sk.id}` === id);
+    return meta?.entrypoint ?? null;
   }
 
   validateAll(): { valid: boolean; errors: SkillIssue[]; skillErrors: Array<{ id: string; errors: string[] }> } {

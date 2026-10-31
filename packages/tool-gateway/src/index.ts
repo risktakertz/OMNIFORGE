@@ -6,6 +6,7 @@
  * approval. Every decision is auditable.
  */
 import { existsSync, realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve, isAbsolute, sep } from "node:path";
 import { OmniforgeError, ToolInvocation, type ToolInvocation as Invocation } from "@omniforge/shared-types";
 import { newId, nowIso, redactSecrets } from "@omniforge/utils";
@@ -39,6 +40,17 @@ export const ACTION_RISK: Record<ActionClass, { risk: "low" | "medium" | "high";
   deploy: { risk: "high", needsApproval: true },
 };
 
+export interface ApprovalRecord {
+  id: string;
+  /** the exact tool/action this approval unlocks (e.g. "deploy", "git-push") */
+  action: string;
+  /** absolute paths this approval is scoped to (empty = action-wide) */
+  targets?: string[];
+  /** run this approval belongs to */
+  runId?: string;
+  decidedAt?: string;
+}
+
 export interface PolicyContext {
   /** Approved writable roots (workspace path(s), temp dirs). */
   writableRoots: string[];
@@ -46,8 +58,10 @@ export interface PolicyContext {
   approvedSpend: number;
   /** Permissions explicitly granted for this run. */
   permissions: string[];
-  /** Approvals already recorded (approval request ids or 'auto:action'). */
-  approvals: Set<string>;
+  /** Approvals already recorded — action- and scope-specific. */
+  approvals: Map<string, ApprovalRecord>;
+  /** Resolved execution-isolation policy (lazily probed when absent). */
+  sandbox?: SandboxPolicy;
 }
 
 export function defaultContext(writableRoots: string[]): PolicyContext {
@@ -55,9 +69,54 @@ export function defaultContext(writableRoots: string[]): PolicyContext {
     writableRoots,
     approvedSpend: Number(process.env.APPROVED_SPEND ?? "0") || 0,
     permissions: [],
-    approvals: new Set(),
+    approvals: new Map(),
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Execution isolation (mission D2)                                    */
+/* ------------------------------------------------------------------ */
+
+export type SandboxMode = "container" | "host-allowlist" | "none";
+
+export interface SandboxPolicy {
+  mode: SandboxMode;
+  runtime: string | null;
+  detail: string;
+}
+
+/**
+ * Probe for a host-enforced sandbox (Docker/Podman). argv-based, cached by
+ * the caller. "host-allowlist" means: only known-safe argv commands may run
+ * on the host; anything untrusted requires a real container.
+ */
+export function resolveSandbox(probe: (bin: string, args: string[]) => { status: number | null } = defaultProbe): SandboxPolicy {
+  for (const rt of ["docker", "podman"]) {
+    const r = probe(rt, ["info", "--format", "{{.ServerVersion}}"]);
+    if (r.status === 0) {
+      return { mode: "container", runtime: rt, detail: `${rt} available — untrusted code can run in an isolated container` };
+    }
+  }
+  return {
+    mode: "host-allowlist",
+    runtime: null,
+    detail: "no container runtime on this host — only allowlisted known-safe commands (template render/tests, node/git argv) may execute; untrusted generated code is refused (E_SANDBOX_UNAVAILABLE)",
+  };
+}
+
+function defaultProbe(bin: string, args: string[]): { status: number | null } {
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 5_000, stdio: "ignore" });
+  return { status: r.status };
+}
+
+/** Binaries that may execute on the host under the allowlist policy. */
+export const HOST_ALLOWLIST = new Set([
+  "node", "npm", "npx", "pnpm", "git", "tar", "ls", "cat", "pwd", "echo",
+  "sleep", "head", "tail", "wc", "sh", "bash", "cmd", "docker", "podman",
+]);
+
+/** Shell metacharacters that disqualify an argument from argv execution. */
+export const ARGV_UNSAFE = /[|&;<>()$`'\"*?[\]{}~\n\r]/;
 
 export interface Decision {
   decision: "allow" | "deny" | "approval-required";
@@ -136,9 +195,9 @@ export class ToolGateway {
     let reason = "policy allow";
 
     if (policy.needsApproval) {
-      const granted = [...this.ctx.approvals].some((a) => a === `auto:${tool}` || a.startsWith("apr_"));
+      const granted = this.hasScopedApproval(tool, detail.target !== undefined ? String(detail.target) : undefined);
       decision = granted ? "allow" : "approval-required";
-      reason = granted ? "explicit approval on record" : `${actionClass} requires human approval`;
+      reason = granted ? "scoped approval on record for this action/target" : `${actionClass} requires human approval (action+scope specific)`;
     }
     if (detail.spend !== undefined && Number(detail.spend) > this.ctx.approvedSpend) {
       decision = "approval-required";
@@ -174,9 +233,56 @@ export class ToolGateway {
     return { decision, actionClass, reason, invocation };
   }
 
-  /** Records a human approval for a tool/action. */
-  recordApproval(approvalId: string): void {
-    this.ctx.approvals.add(approvalId);
+  /**
+   * Records a human approval. Approvals are action- and scope-specific: an
+   * apr_* id alone never grants blanket permission (mission D2).
+   */
+  recordApproval(approval: ApprovalRecord | string): void {
+    if (typeof approval === "string") {
+      // explicit legacy auto-approvals (auto:<tool>) remain self-scoped;
+      // bare ids are recorded with action "unknown" and match nothing
+      const auto = approval.startsWith("auto:");
+      this.ctx.approvals.set(approval, { id: approval, action: auto ? approval.slice(5) : "unknown", decidedAt: nowIso() });
+      return;
+    }
+    this.ctx.approvals.set(approval.id, { ...approval, decidedAt: approval.decidedAt ?? nowIso() });
+  }
+
+  private hasScopedApproval(tool: string, target?: string): boolean {
+    for (const rec of this.ctx.approvals.values()) {
+      if (rec.action !== tool) continue;
+      if (rec.targets && rec.targets.length > 0) {
+        if (!target) continue;
+        const covered = rec.targets.some((t) => target === t || target.startsWith(t.endsWith(sep) ? t : t + sep));
+        if (!covered) continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Governed execution decision for a command (mission D2): argv-only (no
+   * shell strings), host allowlist enforcement, and a hard requirement for a
+   * container runtime when the code is not a known-safe shape.
+   */
+  authorizeExec(cmd: string, args: string[], opts: { cwd: string; trusted?: boolean; tool?: string } = { cwd: process.cwd() }): Decision {
+    if (typeof cmd !== "string" || args.some((a) => typeof a !== "string")) {
+      throw new OmniforgeError("E_SANDBOX_UNAVAILABLE", "commands must be string argv (no shell strings)", {});
+    }
+    if (ARGV_UNSAFE.test(cmd) || args.some((a) => ARGV_UNSAFE.test(a))) {
+      throw new OmniforgeError("E_GATEWAY_DENIED", "shell metacharacters in argv refused — use structured arguments", { cmd });
+    }
+    const sandbox = this.ctx.sandbox ?? (this.ctx.sandbox = resolveSandbox());
+    const safe = HOST_ALLOWLIST.has(cmd);
+    if (!safe && sandbox.mode !== "container") {
+      throw new OmniforgeError(
+        "E_SANDBOX_UNAVAILABLE",
+        `executing '${cmd}' on the host requires a container sandbox (docker/podman); none is available — untrusted code will not run unsandboxed`,
+        { sandbox: sandbox.detail }
+      );
+    }
+    return this.authorize(opts.tool ?? (safe ? "run" : "exec"), { target: opts.cwd, command: redactSecrets([cmd, ...args].join(" ")) });
   }
 
   audit(): Invocation[] {

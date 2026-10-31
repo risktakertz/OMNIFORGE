@@ -32,6 +32,9 @@ export const ProductKind = z.enum([
   "game-3d",
   "ai",
   "automation",
+  // v1.1: recognized-but-unmapped product domains. A "novel" intent must
+  // never silently become a website/api scaffold — see intent-engine.
+  "other",
 ]);
 export type ProductKind = z.infer<typeof ProductKind>;
 
@@ -71,6 +74,7 @@ export const TaskStatus = z.enum([
   "passed",
   "failed",
   "blocked",
+  "skipped",
 ]);
 export type TaskStatus = z.infer<typeof TaskStatus>;
 
@@ -114,6 +118,12 @@ export const ProjectIntent = z.object({
   unknowns: z.array(Unknown).default([]),
   permissions: z.array(z.string()).default([]),
   createdAt: z.string().datetime().optional(),
+  // v1.1: novelty + interpreter provenance. novel=true means no deterministic
+  // rule confidently matched the domain; interpretation requires a model
+  // (NEEDS_MODEL) instead of silently falling back to a known template.
+  novelty: z.enum(["known", "novel"]).default("known"),
+  interpreter: z.enum(["deterministic", "model-assisted"]).default("deterministic"),
+  domainHints: z.array(z.string()).default([]),
 });
 export type ProjectIntent = z.infer<typeof ProjectIntent>;
 
@@ -222,6 +232,15 @@ export const ApprovalRequest = z.object({
   status: z.enum(["pending", "approved", "denied", "expired"]).default("pending"),
   decidedBy: z.string().optional(),
   decidedAt: z.string().datetime().optional(),
+  // v1.1: approvals are action-, scope- and run-specific. An apr_* token
+  // never grants blanket permission beyond its recorded scope.
+  runId: z.string().optional(),
+  scope: z
+    .object({
+      actions: z.array(z.string()).default([]),
+      targets: z.array(z.string()).default([]),
+    })
+    .optional(),
 });
 export type ApprovalRequest = z.infer<typeof ApprovalRequest>;
 
@@ -257,9 +276,13 @@ export type WorkspaceLease = z.infer<typeof WorkspaceLease>;
 export const CheckResult = z.object({
   id: z.string(),
   name: z.string(),
-  status: z.enum(["passed", "failed", "skipped", "blocked"]),
+  status: z.enum(["passed", "failed", "skipped", "blocked", "not-run"]),
   message: z.string().default(""),
   evidencePaths: z.array(z.string()).default([]),
+  // v1.1: critical checks (acceptance criteria) must actually run — a
+  // skipped/blocked/not-run critical check can never produce a PASS.
+  // advisory checks record extra evidence and never gate readiness.
+  severity: z.enum(["critical", "advisory"]).default("critical"),
 });
 export type CheckResult = z.infer<typeof CheckResult>;
 
@@ -333,6 +356,10 @@ export type ExecutionRun = z.infer<typeof ExecutionRun>;
 export const FailureCodes = [
   "E_INTENT_UNCLEAR",
   "E_INTENT_BLOCKING_UNKNOWN",
+  "E_INTENT_NOVEL", // v1.1: novel request needs model-assisted interpretation (NEEDS_MODEL)
+  "E_MODEL_UNAVAILABLE", // v1.1: no authorized model/backend for a model-required step
+  "E_SANDBOX_UNAVAILABLE", // v1.1: untrusted code execution requested without an enforced sandbox
+  "E_REPAIR_NONIMPROVING", // v1.1: repair attempts are not improving — stop instead of looping
   "E_CAPABILITY_MISSING",
   "E_CAPABILITY_UNAVAILABLE",
   "E_GATEWAY_DENIED",

@@ -17,7 +17,7 @@ import {
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { OmniforgeError, WorkspaceLease, type WorkspaceLease as Lease, type ReleaseArtifact } from "@omniforge/shared-types";
+import { OmniforgeError, WorkspaceLease, type WorkspaceLease as Lease, type ReleaseArtifact, type ProductBlueprint } from "@omniforge/shared-types";
 import { newId, nowIso, slugify, shortHash, safeJoin } from "@omniforge/utils";
 import { ToolGateway } from "@omniforge/tool-gateway";
 
@@ -42,6 +42,7 @@ export interface WorkspaceInfo {
 
 const LOCK_FILE = ".omniforge-lock.json";
 const CONFIG_FILE = "project.config.json";
+const BLUEPRINT_FILE = "project.blueprint.json";
 const LOCK_TTL_MS = 30 * 60 * 1000;
 
 function templatesRootOf(repoRoot: string): string {
@@ -55,9 +56,12 @@ export function listTemplates(repoRoot: string): string[] {
 }
 
 export function createWorkspace(opts: CreateWorkspaceOptions): WorkspaceInfo {
-  const templateDirName = opts.templateDirName ?? opts.templateId.replace(/^template:/, "");
+  // generator-mode workspaces (templateId "generator:<name>") start empty:
+  // a composable generator writes the project instead of a copied template
+  const generatorMode = opts.templateId.startsWith("generator:");
+  const templateDirName = opts.templateDirName ?? opts.templateId.replace(/^(template|generator):/, "");
   const templateDir = join(templatesRootOf(opts.repoRoot), templateDirName);
-  if (!existsSync(templateDir)) {
+  if (!generatorMode && !existsSync(templateDir)) {
     throw new OmniforgeError("E_CAPABILITY_MISSING", `template not found: ${templateDirName}`, { templateDir });
   }
   // gateway confines every write to the projects root
@@ -71,10 +75,12 @@ export function createWorkspace(opts: CreateWorkspaceOptions): WorkspaceInfo {
   }
   opts.gateway.authorize("scaffold", { target: workspacePath });
   mkdirSync(workspacePath, { recursive: true });
-  cpSync(templateDir, workspacePath, {
-    recursive: true,
-    filter: (src) => !/(node_modules|dist|\.turbo)$/.test(src),
-  });
+  if (!generatorMode) {
+    cpSync(templateDir, workspacePath, {
+      recursive: true,
+      filter: (src) => !/(node_modules|dist|\.turbo)$/.test(src),
+    });
+  }
 
   const configPath = join(workspacePath, CONFIG_FILE);
   writeFileSync(
@@ -97,6 +103,33 @@ export function createWorkspace(opts: CreateWorkspaceOptions): WorkspaceInfo {
 
   const lease = acquireLease(workspacePath, "workspace-manager");
   return { workspacePath, workspaceId, configPath, lease };
+}
+
+/**
+ * Persist the ORIGINAL blueprint (acceptance criteria + scope) inside the
+ * workspace before implementation. Verification and later modify operations
+ * compare against this file — never against criteria derived from results.
+ */
+export function saveBlueprint(workspacePath: string, blueprint: ProductBlueprint, gateway: ToolGateway): string {
+  gateway.checkPath(resolve(workspacePath));
+  const p = join(workspacePath, BLUEPRINT_FILE);
+  writeFileSync(p, JSON.stringify(blueprint, null, 2), "utf8");
+  return p;
+}
+
+/**
+ * Load the persisted original blueprint. Returns null (typed, honest) for
+ * legacy workspaces created before contract v2 — callers must report the
+ * missing baseline instead of inventing empty criteria.
+ */
+export function loadBlueprint(workspacePath: string): ProductBlueprint | null {
+  const p = join(workspacePath, BLUEPRINT_FILE);
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as ProductBlueprint;
+  } catch {
+    return null;
+  }
 }
 
 export function acquireLease(workspacePath: string, holder: string): Lease {

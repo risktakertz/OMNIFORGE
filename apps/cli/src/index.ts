@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 import { parseArgs, slugify, redactSecrets } from "@omniforge/utils";
-import { OmniforgeError } from "@omniforge/shared-types";
+import { OmniforgeError, ProductBlueprint } from "@omniforge/shared-types";
 import { createLogger } from "@omniforge/observability";
 import { parseRequest, describeIntent } from "@omniforge/intent-engine";
 import { buildBlueprint, classifyFamily } from "@omniforge/blueprint-engine";
@@ -18,7 +18,7 @@ import { routeIntent } from "@omniforge/skill-router";
 import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
 import { LocalNodeBackend, OpenCodeBackend, detectOpenCode } from "@omniforge/agent-runtime";
 import { buildRegistry, probeOllama, routeModel } from "@omniforge/model-router";
-import { listWorkspaces, readWorkspaceConfig, exportWorkspace, acquireLease, releaseLease } from "@omniforge/workspace-manager";
+import { listWorkspaces, readWorkspaceConfig, exportWorkspace, acquireLease, releaseLease, loadBlueprint } from "@omniforge/workspace-manager";
 import { verifyWorkspace, runProjectTests, classifyFailure, independentFinalVerification } from "@omniforge/verification";
 import { dryRunDeploy, executeDeploy } from "@omniforge/deployment";
 import { createRun, resumeRun, runStatus } from "@omniforge/orchestration";
@@ -122,7 +122,8 @@ async function doctor(c: Ctx): Promise<void> {
   const localHealth = await backend.health();
   rows.push({ name: "backend:local-node", status: localHealth.status, detail: localHealth.detail });
   const opencode = new OpenCodeBackend(gatewayFor(c), await detectOpenCode());
-  rows.push({ name: "backend:opencode", status: opencode.available ? "configured" : "unavailable", detail: opencode.availabilityNote });
+  const ocHealth = await opencode.health();
+  rows.push({ name: "backend:opencode", status: ocHealth.status, detail: ocHealth.detail });
 
   const models = buildRegistry();
   for (const m of models.filter((x) => x.availability !== "unavailable")) {
@@ -260,11 +261,12 @@ async function createCmd(c: Ctx, request: string): Promise<void> {
   if (!c.json) process.stdout.write(`omniforge create — building: "${request}"\n`);
   const result = await createRun(request, orchestratorConfig(c));
   const v = result.state.verification;
-  const final = independentFinalVerification(
-    // re-derive criteria trust from the run itself
-    { acceptanceCriteria: v?.checks.map((chk) => ({ id: chk.id, criterion: chk.name, evidenceMethod: "run" })) } as never,
-    v as never
-  );
+  // Independent verification compares the ORIGINAL persisted blueprint
+  // against observed evidence — never criteria derived from the results.
+  const original = result.state.blueprint;
+  const final = original && v
+    ? independentFinalVerification(original, v)
+    : { verdict: "fail" as const, checked: v?.checks.length ?? 0, unmatched: [], nonRunCritical: [], summary: v ? "no original blueprint on the run state — independent verification refused" : "run produced no verification evidence — see omniforge status <run-id> for the failure" };
   if (!c.json) {
     process.stdout.write(`\nDONE run=${result.runId}\nworkspace: ${result.state.workspacePath}\npreview:   open ${join(result.state.workspacePath, "dist", "index.html")} in a browser, or: npx serve ${join(result.state.workspacePath, "dist")}\nexport:    omniforge export ${result.state.workspacePath}\nverification: ${v?.passed ? "PASSED" : "FAILED"} (${v?.checks.map((chk) => `${chk.id}:${chk.status}`).join(" ")})\nindependent verifier: ${final.verdict.toUpperCase()} — ${final.summary}\n`);
     return;
@@ -295,8 +297,18 @@ async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> 
   const gateway = gatewayFor(c, [p]);
   const backend = new LocalNodeBackend(gateway);
   try {
-    // regression baseline
-    const before = await verifyWorkspace({ workspacePath: p, blueprint: { acceptanceCriteria: [] } as never, backend });
+    // regression baseline: the ORIGINAL persisted acceptance criteria.
+    // Legacy workspaces without a persisted blueprint are reported honestly
+    // — an empty criteria list is never silently accepted as a baseline.
+    const baseline = loadBlueprint(p);
+    if (!baseline) {
+      throw new OmniforgeError(
+        "E_VERIFY_FAILED",
+        "no persisted original blueprint (project.blueprint.json) in this workspace — regression baseline unavailable. Re-create the project with the current omniforge create, or run `omniforge test` for a checks-only pass.",
+        { workspacePath: p }
+      );
+    }
+    const before = await verifyWorkspace({ workspacePath: p, blueprint: baseline, backend });
     const m = change.match(/set\s+(business\.name|business\.tagline|theme\.primary|theme\.accent|contact\.phone|contact\.email|contact\.whatsapp)\s+(.+)/i);
     if (!m) {
       throw new OmniforgeError("E_NOT_IMPLEMENTED", "v0.1 modify supports: set business.name|business.tagline|theme.primary|theme.accent|contact.phone|contact.email|contact.whatsapp <value> — scoped changes only; broader edits arrive with the repair engine pack");
@@ -313,12 +325,12 @@ async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> 
     gateway.authorize("render", { target: p });
     const { execFileSync } = await import("node:child_process");
     execFileSync("node", ["scripts/render.mjs"], { cwd: p, stdio: "pipe", timeout: 60_000 });
-    const after = await verifyWorkspace({ workspacePath: p, blueprint: { acceptanceCriteria: [] } as never, backend });
+    const after = await verifyWorkspace({ workspacePath: p, blueprint: baseline, backend });
     const classification = after.passed ? null : classifyFailure(after.failures.join("; "), 1);
     return out(
       c,
       { changed: `${section}.${parts[1]}`, value, before: before.passed, after: after.passed, failures: after.failures, classification },
-      `modify complete: ${section}.${parts[1]} = "${value}"\n  baseline: ${before.passed ? "passed" : "failed"} -> after: ${after.passed ? "passed" : "failed"}\n${after.failures.length ? "  failures: " + after.failures.join("; ") : "  no regressions"}`
+      `modify complete: ${section}.${parts[1]} = "${value}"\n  baseline (original criteria): ${before.passed ? "passed" : "failed"} -> after: ${after.passed ? "passed" : "failed"}\n${after.failures.length ? "  failures: " + after.failures.join("; ") : "  no regressions against original acceptance criteria"}`
     );
   } finally {
     releaseLease(p, "cli-modify");
@@ -330,11 +342,24 @@ async function testCmd(c: Ctx, target: string): Promise<void> {
   const gateway = gatewayFor(c, [p]);
   const backend = new LocalNodeBackend(gateway);
   const tests = runProjectTests(p, backend);
-  const result = await verifyWorkspace({
-    workspacePath: p,
-    blueprint: { acceptanceCriteria: [{ id: "T1", criterion: "project test script", evidenceMethod: "run-project-tests" }, { id: "T2", criterion: "no secrets", evidenceMethod: "no-secrets" }] } as never,
-    backend,
+  // declared checks-only contract (schema-parsed, not a cast): run the
+  // project's own suite + secrets scan
+  const contract = ProductBlueprint.parse({
+    intentId: "cli:test",
+    productBrief: "checks-only test contract for an existing workspace",
+    scope: { mvp: ["project test script"], later: [], excluded: [] },
+    rolesAndFlows: [],
+    architecture: {},
+    dataModel: {},
+    contracts: [],
+    threatModel: {},
+    acceptanceCriteria: [
+      { id: "T1", criterion: "project test script", evidenceMethod: "run-project-tests" },
+      { id: "T2", criterion: "no secrets", evidenceMethod: "no-secrets" },
+    ],
+    deploymentRequirements: {},
   });
+  const result = await verifyWorkspace({ workspacePath: p, blueprint: contract, backend });
   return out(c, { projectTests: tests, result }, `tests: ${tests.status} — ${tests.message}\n${result.checks.map((chk) => `${chk.id}:${chk.status}`).join(" ")}`), Promise.resolve();
 }
 

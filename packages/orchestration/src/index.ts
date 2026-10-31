@@ -1,19 +1,29 @@
 /**
  * OMNIFORGE orchestration — the single control plane.
- * A LangGraph.js state graph implements the directive's pipeline
- * (intake → permission-check → interpret → research → specify → select → plan
- *  → prepare-workspace → execute → verify → [repair] → approve → package
- *  → deliver → report) with DURABLE file-backed checkpoints: runs persist
- * state per thread id and resume after interruption from the checkpoint store,
- * not from memory.
  *
- * Services are injected so tests can inject failures (bounded repair + resume
- * verification) without touching production code paths.
+ * Mission upgrades (C4/C5/D1):
+ *  - The task plan now GOVERNS execution: the `execute` node drives the
+ *    project DAG through `executeDag` with real executors; task statuses live
+ *    in one durable ledger (`dag-state.json` + journal) shared by CLI,
+ *    graph and resume.
+ *  - The repair node consumes REAL failure evidence via the bounded repair
+ *    engine (`repair.ts`) and re-runs only failed tasks + regressions.
+ *  - The verify phase compares against the ORIGINAL persisted blueprint
+ *    (saved into the workspace before implementation), never against
+ *    criteria derived from results.
+ *  - `FileCheckpointSaver` writes atomically, keeps a versioned history with
+ *    parent links, and falls back to the last valid checkpoint if the latest
+ *    file is corrupt or truncated.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
+import {
+  Annotation,
+  END,
+  MemorySaver,
+  START,
+  StateGraph,
+} from "@langchain/langgraph";
 import {
   BaseCheckpointSaver,
   type Checkpoint,
@@ -23,8 +33,16 @@ import {
   type PendingWrite,
 } from "@langchain/langgraph-checkpoint";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import type { ProjectIntent, ProductBlueprint, SkillSelection, ValidationResult } from "@omniforge/shared-types";
+import {
+  type ProjectIntent,
+  type ProductBlueprint,
+  type SkillSelection,
+  type ValidationResult,
+  type TaskNode,
+} from "@omniforge/shared-types";
+import { OmniforgeError } from "@omniforge/shared-types";
 import type { ExecutionPlan } from "@omniforge/task-planner";
+import { planExecution, topoSort } from "@omniforge/task-planner";
 import { newId, nowIso } from "@omniforge/utils";
 import { RunJournal, createLogger } from "@omniforge/observability";
 import { parseRequest } from "@omniforge/intent-engine";
@@ -32,11 +50,20 @@ import { buildBlueprint } from "@omniforge/blueprint-engine";
 import { StaticKnowledgeProvider } from "@omniforge/research-engine";
 import { CapabilityRegistry } from "@omniforge/capability-registry";
 import { routeIntent } from "@omniforge/skill-router";
-import { planExecution, topoSort } from "@omniforge/task-planner";
 import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
-import { createWorkspace, exportWorkspace, readWorkspaceConfig, releaseLease } from "@omniforge/workspace-manager";
-import { verifyWorkspace, classifyFailure } from "@omniforge/verification";
-import { LocalNodeBackend } from "@omniforge/agent-runtime";
+import {
+  createWorkspace,
+  exportWorkspace,
+  readWorkspaceConfig,
+  releaseLease,
+  saveBlueprint,
+} from "@omniforge/workspace-manager";
+import { verifyWorkspace } from "@omniforge/verification";
+import { LocalNodeBackend, detectCodingBackend } from "@omniforge/agent-runtime";
+import { executeDag, resetFailedTasks, runGoverned, type DagContext, type TaskExecutor } from "./dag.js";
+import { executeRepair, signatureOf } from "./repair.js";
+import { composeAgentMvp } from "./agent-mvp.js";
+import { invokeSkill } from "./skills.js";
 
 /* ------------------------------------------------------------------ */
 /* Graph state                                                         */
@@ -54,9 +81,11 @@ const OFState = Annotation.Root({
   workspacePath: Annotation<string>,
   verification: Annotation<ValidationResult | null>,
   repairAttempts: Annotation<number>,
+  repairHistory: Annotation<string[]>,
   artifactPath: Annotation<string>,
   runReport: Annotation<string>,
   error: Annotation<string>,
+  dagSummary: Annotation<string>,
 });
 export type OFState = typeof OFState.State;
 
@@ -71,7 +100,7 @@ export interface ServiceConfig {
 }
 
 /* ------------------------------------------------------------------ */
-/* Durable file checkpoint saver (implements the LangGraph contract)   */
+/* Durable file checkpoint saver v2 (atomic, versioned, parent-linked) */
 /* ------------------------------------------------------------------ */
 
 export class FileCheckpointSaver extends BaseCheckpointSaver {
@@ -91,33 +120,72 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
     return join(this.threadDir(threadId), "checkpoint-latest.json");
   }
 
-  async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
-    const threadId = String(config.configurable?.thread_id ?? "");
-    const file = this.latestPath(threadId);
-    if (!existsSync(file)) return undefined;
-    const raw = readFileSync(file, "utf8");
-    if (raw.trim().length === 0) return undefined; // deleted thread
-    return this.parseTuple(threadId, raw);
+  private historyPath(threadId: string): string {
+    return join(this.threadDir(threadId), "history.json");
   }
 
-  private async parseTuple(threadId: string, raw: string): Promise<CheckpointTuple> {
+  private readHistory(threadId: string): Array<{ id: string; parent: string | undefined; at: string }> {
+    const p = this.historyPath(threadId);
+    if (!existsSync(p)) return [];
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) as Array<{ id: string; parent: string | undefined; at: string }>;
+    } catch {
+      return [];
+    }
+  }
+
+  private atomicWrite(file: string, data: string): void {
+    const tmp = `${file}.${newId("tmp")}.tmp`;
+    writeFileSync(tmp, data, "utf8");
+    renameSync(tmp, file);
+  }
+
+  private async loadFile(file: string): Promise<CheckpointTuple | undefined> {
+    if (!existsSync(file)) return undefined;
+    const raw = readFileSync(file, "utf8");
+    if (raw.trim().length === 0) return undefined; // deleted/empty thread
+    try {
+      return await this.parseTuple(raw);
+    } catch {
+      return undefined; // corrupt entry — caller falls back through history
+    }
+  }
+
+  private async parseTuple(raw: string): Promise<CheckpointTuple> {
     const parsed = JSON.parse(raw) as {
       type: string;
       bytes: string;
       metadata: CheckpointMetadata | undefined;
       parentConfig: RunnableConfig | undefined;
       checkpointId: string;
+      threadId?: string;
     };
     const bytes = Uint8Array.from(Buffer.from(parsed.bytes, "base64"));
     const loaded = (await this.serde.loadsTyped(parsed.type, bytes)) as unknown;
     // JsonPlusSerializer.loadsTyped resolves to [type, value] — accept both shapes.
     const checkpoint = (Array.isArray(loaded) ? loaded[loaded.length - 1] : loaded) as Checkpoint;
     return {
-      config: { configurable: { thread_id: threadId, checkpoint_id: parsed.checkpointId } },
+      config: { configurable: { thread_id: parsed.threadId ?? "", checkpoint_id: parsed.checkpointId } },
       checkpoint,
       metadata: parsed.metadata,
       parentConfig: parsed.parentConfig,
     };
+  }
+
+  async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
+    const threadId = String(config.configurable?.thread_id ?? "");
+    const latest = await this.loadFile(this.latestPath(threadId));
+    if (latest) return latest;
+    // fall back through versioned history (latest-only files must never
+    // silently lose the last valid state)
+    const history = this.readHistory(threadId);
+    for (let i = history.length - 1; i >= 0; i--) {
+      const entry = history[i]!;
+      const file = join(this.threadDir(threadId), `checkpoint-${entry.id}.json`);
+      const tuple = await this.loadFile(file);
+      if (tuple) return { ...tuple, config: { configurable: { thread_id: threadId, checkpoint_id: entry.id } } };
+    }
+    return undefined;
   }
 
   async *list(config: RunnableConfig, _options?: CheckpointListOptions): AsyncGenerator<CheckpointTuple> {
@@ -134,17 +202,23 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
     const threadId = String(config.configurable?.thread_id ?? "");
     const [type, bytes] = this.serde.dumpsTyped(checkpoint);
     const checkpointId = String(checkpoint.id ?? newId("ckpt"));
-    writeFileSync(
-      this.latestPath(threadId),
-      JSON.stringify({
-        type,
-        bytes: Buffer.from(bytes).toString("base64"),
-        metadata,
-        parentConfig: undefined,
-        checkpointId,
-      }),
-      "utf8"
-    );
+    const parentConfig = (checkpoint as { parent_config?: RunnableConfig }).parent_config;
+    const payload = JSON.stringify({
+      type,
+      bytes: Buffer.from(bytes).toString("base64"),
+      metadata,
+      parentConfig,
+      checkpointId,
+      threadId,
+    });
+    // atomic latest + versioned copy (crash between them loses nothing:
+    // history keeps the previous valid entry and latest is rename-atomic)
+    this.atomicWrite(this.latestPath(threadId), payload);
+    const versioned = join(this.threadDir(threadId), `checkpoint-${checkpointId}.json`);
+    writeFileSync(versioned, payload, "utf8");
+    const history = this.readHistory(threadId).filter((h) => h.id !== checkpointId);
+    history.push({ id: checkpointId, parent: parentConfig ? String((parentConfig.configurable as { checkpoint_id?: string })?.checkpoint_id ?? "") : undefined, at: nowIso() });
+    this.atomicWrite(this.historyPath(threadId), JSON.stringify(history.slice(-50), null, 2));
     return { configurable: { thread_id: threadId, checkpoint_id: checkpointId } };
   }
 
@@ -157,6 +231,16 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
   async deleteThread(threadId: string): Promise<void> {
     const file = this.latestPath(threadId);
     if (existsSync(file)) writeFileSync(file, "", "utf8");
+    const dir = this.threadDir(threadId);
+    for (const f of readdirSync(dir)) {
+      if (f.startsWith("checkpoint-") && f !== "checkpoint-latest.json") {
+        try {
+          unlinkSync(join(dir, f));
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    }
   }
 }
 
@@ -164,8 +248,9 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
 /* Graph construction                                                  */
 /* ------------------------------------------------------------------ */
 
+const GRAPH_PHASE_TASKS = ["t:intake", "t:permission-check", "t:interpret", "t:research", "t:specify", "t:select", "t:plan"];
+
 export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | FileCheckpointSaver) {
-  void config.logger;
   const journalOf = (state: OFState): RunJournal => new RunJournal(config.runsRoot, state.runId || "pending-run");
 
   const failNode = config.failOnceAt;
@@ -191,7 +276,16 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     })
     .addNode("interpret", (state: OFState) => {
       const intent = parseRequest(state.request);
-      journalOf(state).append("interpret", "info", `intent parsed: ${intent.operation}/${intent.productKinds.join("+")}/${intent.locale}`);
+      journalOf(state).append("interpret", "info", `intent parsed: ${intent.operation}/${intent.productKinds.join("+")}/${intent.locale} novelty=${intent.novelty}`);
+      if (intent.novelty === "novel") {
+        // honest typed outcome: a novel request must NOT silently become a
+        // known template — it needs model-assisted interpretation
+        throw new OmniforgeError("E_INTENT_NOVEL", "request matches no known product capability — needs model-assisted interpretation (NEEDS_MODEL)", {
+          request: state.request.slice(0, 200),
+          hints: intent.domainHints,
+          prerequisite: "configure an authorized model provider (see docs/MODEL_ROUTING.md), then re-run",
+        });
+      }
       return { intent };
     })
     .addNode("research", (state: OFState) => {
@@ -206,7 +300,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     })
     .addNode("specify", (state: OFState) => {
       const blueprint = buildBlueprint(state.intent!);
-      journalOf(state).append("specify", "info", `blueprint ready: ${blueprint.acceptanceCriteria.length} acceptance criteria`);
+      journalOf(state).append("specify", "info", `blueprint ready: ${blueprint.acceptanceCriteria.length} acceptance criteria (original requirements persisted at verify time)`);
       return { blueprint };
     })
     .addNode("select", (state: OFState) => {
@@ -222,7 +316,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         missing: [],
       });
       const journal = journalOf(state);
-      journal.append("plan", "info", `task graph: ${plan.nodes.length} nodes, critical path ${topoSort(plan.nodes).length}`);
+      journal.append("plan", "info", `task graph: ${plan.nodes.length} nodes, critical path ${topoSort(plan.nodes).length} — DAG will govern execution`);
       journal.saveState({ request: state.request, runId: state.runId, intent: state.intent, templateId: state.templateId });
       return { taskPlan: plan };
     })
@@ -230,6 +324,10 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       // idempotent on resume: an existing workspace is reused, never duplicated
       if (state.workspacePath && existsSync(state.workspacePath)) {
         journalOf(state).append("prepare-workspace", "info", `reusing existing workspace ${state.workspacePath}`);
+        // ensure the ORIGINAL blueprint is persisted (legacy workspace repair)
+        const ws = { workspacePath: state.workspacePath };
+        const gateway = new ToolGateway(defaultContext([state.workspacePath, join(config.repoRoot, "projects")]));
+        saveBlueprint(ws.workspacePath, state.blueprint!, gateway);
         return {};
       }
       const gateway = new ToolGateway(defaultContext([join(config.repoRoot, "projects")]));
@@ -241,72 +339,255 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         repoRoot: config.repoRoot,
         gateway,
       });
-      journalOf(state).append("prepare-workspace", "info", `workspace created: ${ws.workspacePath}`);
+      // persist the ORIGINAL acceptance criteria BEFORE implementation
+      const bpPath = saveBlueprint(ws.workspacePath, state.blueprint!, gateway);
+      // generator-mode products are composed, not copied from a template
+      if (state.templateId === "generator:agent-mvp") {
+        const composed = composeAgentMvp(ws.workspacePath, state.intent!, gateway);
+        journalOf(state).append("prepare-workspace", "info", `agent-MVP composed: ${composed.files.length} original files written`);
+      }
+      journalOf(state).append("prepare-workspace", "info", `workspace created: ${ws.workspacePath}; original blueprint persisted: ${bpPath}`);
       return { workspacePath: ws.workspacePath };
     })
-    .addNode("execute", (state: OFState) => {
+    .addNode("execute", async (state: OFState) => {
       const journal = journalOf(state);
       if (failNode && !failedOnce) {
         failedOnce = true;
         journal.append("execute", "error", `injected failure for resume test at ${failNode}`);
         throw new Error(`injected failure at ${failNode}`);
       }
-      const gateway = new ToolGateway(defaultContext([state.workspacePath, join(config.repoRoot, "projects")]));
-      gateway.authorize("run", { target: state.workspacePath });
-      if (existsSync(join(state.workspacePath, "scripts", "render.mjs"))) {
-        execFileSync("node", ["scripts/render.mjs"], { cwd: state.workspacePath, stdio: "pipe", timeout: 60_000 });
-        journal.append("execute", "info", "template rendered into dist/");
-      } else if (existsSync(join(state.workspacePath, "tests"))) {
-        // structure/behavior suites that need no dependencies (node:test or plain node)
-        const suitePath = existsSync(join(state.workspacePath, "tests", "structure.test.mjs"))
-          ? "tests/structure.test.mjs"
-          : (readdirSync(join(state.workspacePath, "tests")).find((f) => f.endsWith(".test.mjs"))
-              ? `tests/${readdirSync(join(state.workspacePath, "tests")).find((f) => f.endsWith(".test.mjs"))}`
-              : null);
-        if (suitePath) {
-          execFileSync("node", [suitePath], { cwd: state.workspacePath, stdio: "pipe", timeout: 60_000 });
-          journal.append("execute", "info", `template suite passed: ${suitePath}`);
-        } else {
-          journal.append("execute", "info", "no dependency-free suite found; execute recorded as structural scaffold only");
-        }
-      } else {
-        journal.append("execute", "warn", "template has no render step or suite; execute recorded honestly as scaffold-only");
+      const plan = state.taskPlan!;
+      const dagCtx: DagContext = { journal, runsRoot: config.runsRoot, runId: state.runId, env: { workspacePath: state.workspacePath } };
+
+      const executors: Record<string, TaskExecutor> = {
+        passthrough: async (node) => ({
+          status: "passed",
+          message: "completed by graph phase",
+          artifacts: [],
+          evidence: [
+            {
+              taskId: node.id,
+              commandOrTool: `graph-node:${node.operation}`,
+              environment: process.platform,
+              timestamp: nowIso(),
+              exitStatus: "passed",
+              artifactPaths: [],
+              summary: "executed as an orchestration graph node",
+            },
+          ],
+        }),
+        execute: async (node: TaskNode) => {
+          const ws = state.workspacePath;
+          const gateway = new ToolGateway(defaultContext([ws, join(config.repoRoot, "projects")]));
+          gateway.authorize("run", { target: ws });
+          if (existsSync(join(ws, "scripts", "render.mjs"))) {
+            const r = runGoverned("node", ["scripts/render.mjs"], ws, 60_000);
+            if (r.exitCode !== 0) return { status: "failed", message: `render failed: ${r.stderr.slice(0, 300)}`, artifacts: [], evidence: [] };
+            journal.append("execute", "info", "template rendered into dist/");
+            return {
+              status: "passed",
+              message: "template rendered",
+              artifacts: ["dist/"],
+              evidence: [{ taskId: node.id, commandOrTool: "node scripts/render.mjs", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: ["dist/"], summary: "render ok" }],
+            };
+          }
+          if (existsSync(join(ws, "tests"))) {
+            const suite = existsSync(join(ws, "tests", "structure.test.mjs"))
+              ? "tests/structure.test.mjs"
+              : (readdirSync(join(ws, "tests")).find((f) => f.endsWith(".test.mjs"))
+                  ? `tests/${readdirSync(join(ws, "tests")).find((f) => f.endsWith(".test.mjs"))}`
+                  : null);
+            if (suite) {
+              const r = runGoverned("node", [suite], ws, 60_000);
+              if (r.exitCode !== 0) return { status: "failed", message: `suite failed: ${r.stderr.slice(0, 300)}`, artifacts: [], evidence: [] };
+              journal.append("execute", "info", `template suite passed: ${suite}`);
+              return {
+                status: "passed",
+                message: `suite passed: ${suite}`,
+                artifacts: [suite],
+                evidence: [{ taskId: node.id, commandOrTool: `node ${suite}`, environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: "template suite ok" }],
+              };
+            }
+          }
+          journal.append("execute", "warn", "no render step or suite; recorded honestly as scaffold-only");
+          return { status: "passed", message: "scaffold-only (no executable step)", artifacts: [], evidence: [] };
+        },
+        verify: async () => {
+          // repoRoot included: repo-owned skill entrypoints execute in the
+          // trusted repo domain (they are versioned with the codebase)
+          const gateway = new ToolGateway(defaultContext([state.workspacePath, config.repoRoot]));
+          const backend = new LocalNodeBackend(gateway);
+          const result = await verifyWorkspace({ workspacePath: state.workspacePath, blueprint: state.blueprint!, backend });
+          dagCtx.env["verification"] = JSON.stringify(result);
+          journal.append("verify", result.passed ? "info" : "warn", `verification vs ORIGINAL criteria: ${result.passed ? "passed" : "failed"} — ${result.failures.join(" | ").slice(0, 200) || "all checks ok"}`);
+          const evidence: Array<{ taskId: string; commandOrTool: string; environment: string; timestamp: string; exitStatus: string; artifactPaths: string[]; summary: string }> = result.checks.map((c) => ({
+            taskId: c.id,
+            commandOrTool: "verifyWorkspace",
+            environment: process.platform,
+            timestamp: nowIso(),
+            exitStatus: c.status,
+            artifactPaths: [],
+            summary: c.message,
+          }));
+          // C3: selected skills with executable entrypoints REALLY run — the
+          // testing skill's own suite gate executes through the gateway with
+          // typed JSON I/O; a failure fails the task (never log-only)
+          let skillFailure: string | null = null;
+          try {
+            const registry = new CapabilityRegistry([join(config.repoRoot, "skills")], join(config.repoRoot, "templates"));
+            if (registry.has("skill:testing") && registry.entrypointOf("skill:testing")) {
+              const inv = invokeSkill(gateway, config.repoRoot, registry, "skill:testing", { workspacePath: state.workspacePath }, { timeoutMs: 120_000 });
+              evidence.push(inv.evidence);
+              journal.append("verify", inv.status === "passed" ? "info" : "warn", `skill:testing entrypoint executed (exit ${inv.exitCode}, ${inv.durationMs}ms): ${inv.message.slice(0, 140)}`);
+              if (inv.status === "failed") skillFailure = `skill:testing entrypoint failed: ${inv.message.slice(0, 200)}`;
+            }
+          } catch (e) {
+            // a broken skill integration is a typed failure, not silence
+            skillFailure = `skill invocation error: ${(e as Error).message.slice(0, 200)}`;
+          }
+          if (skillFailure) {
+            return { status: "failed" as const, message: skillFailure, artifacts: [], evidence };
+          }
+          return {
+            status: result.passed ? ("passed" as const) : ("failed" as const),
+            message: result.passed ? "all acceptance criteria passed" : result.failures.join(" | ").slice(0, 300),
+            artifacts: [],
+            evidence,
+          };
+        },
+        package: async (node: TaskNode) => {
+          if (config.skipExport) return { status: "skipped" as const, message: "export skipped by config", artifacts: [], evidence: [] };
+          const gateway = new ToolGateway(defaultContext([state.workspacePath, config.runsRoot]));
+          const artifact = exportWorkspace(state.workspacePath, join(config.runsRoot, state.runId, "export"), gateway);
+          dagCtx.env["artifactPath"] = artifact.path;
+          journal.append("package", "info", `exported artifact ${artifact.path}`);
+          return {
+            status: "passed" as const,
+            message: `exported ${artifact.path}`,
+            artifacts: [artifact.path],
+            evidence: [{ taskId: node.id, commandOrTool: "exportWorkspace", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [artifact.path], summary: `sha256 ${artifact.checksum.slice(0, 16)}` }],
+          };
+        },
+        deliver: async (node: TaskNode) => {
+          const ws = readWorkspaceConfig(state.workspacePath);
+          releaseLease(state.workspacePath, "workspace-manager");
+          journal.append("deliver", "info", `delivered workspace ${String(ws["id"])} — preview: open dist/index.html or npx serve dist`);
+          return {
+            status: "passed" as const,
+            message: `delivered ${String(ws["id"])}`,
+            artifacts: [],
+            evidence: [{ taskId: node.id, commandOrTool: "releaseLease", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: "delivery recorded" }],
+          };
+        },
+      };
+
+      // Bind every plan task to its executor: project tasks execute for real,
+      // graph-phase tasks (intake..plan, prepare-workspace) already ran as
+      // graph nodes and pass through with recorded evidence.
+      const bound: Record<string, TaskExecutor> = {};
+      for (const n of plan.nodes) {
+        bound[n.id] = executors[n.operation] ?? executors["passthrough"]!;
       }
-      return {};
+      // graph-phase tasks recorded as already passed so the DAG skips them
+      // (their real execution happened as graph nodes just before)
+      const dag = await executeDag(
+        { ...plan, nodes: plan.nodes.map((n) => (GRAPH_PHASE_TASKS.includes(n.id) ? { ...n, status: "passed" as const } : n)) },
+        bound,
+        dagCtx
+      );
+      const verification = dagCtx.env["verification"] ? (JSON.parse(dagCtx.env["verification"]) as ValidationResult) : null;
+      const summary = Object.entries(dag.outcomes)
+        .map(([id, o]) => `${id}:${o.status}`)
+        .join(" ");
+      journal.append("execute", dag.allPassed ? "info" : "warn", `DAG ${dag.allPassed ? "completed" : "finished with failures"}: ${summary}`);
+      return {
+        verification,
+        artifactPath: dagCtx.env["artifactPath"] ?? "",
+        dagSummary: summary,
+        error: dag.allPassed ? "" : "dag-failures",
+      };
     })
     .addNode("verify", async (state: OFState) => {
       const journal = journalOf(state);
-      const gateway = new ToolGateway(defaultContext([state.workspacePath]));
-      const backend = new LocalNodeBackend(gateway);
-      const result = await verifyWorkspace({ workspacePath: state.workspacePath, blueprint: state.blueprint!, backend });
-      journal.append("verify", result.passed ? "info" : "warn", `verification ${result.passed ? "passed" : "failed"}: ${result.failures.join(" | ") || "all checks ok"}`);
-      for (const c of result.checks) journal.addEvidence({ taskId: c.id, status: c.status, message: c.message, at: nowIso() });
-      return { verification: result };
-    })
-    .addNode("repair", (state: OFState) => {
-      const journal = journalOf(state);
-      const classification = classifyFailure(state.verification?.failures.join("; ") ?? "unknown", 1);
-      journal.append("repair", "warn", `bounded repair: ${classification.category} → ${classification.suggestedAction}`);
-      const attempts = (state.repairAttempts ?? 0) + 1;
-      if (attempts > 2) {
-        journal.append("repair", "error", "repair budget exhausted — run marked blocked");
-        throw new Error("E_REPAIR_BUDGET_EXCEEDED");
+      if (state.verification) {
+        for (const c of state.verification.checks) journal.addEvidence({ taskId: c.id, status: c.status, message: c.message, at: nowIso() });
+        journal.append("verify", "info", "verify phase: DAG evidence recorded");
+        return {};
       }
-      return { repairAttempts: attempts };
+      // no verification available (DAG blocked before verify) — honest gap
+      journal.append("verify", "warn", "no verification evidence produced by the DAG");
+      return {};
+    })
+    .addNode("repair", async (state: OFState) => {
+      const journal = journalOf(state);
+      if (!state.verification) {
+        // nothing to repair from — a DAG that never produced verification
+        // evidence is a blocker, not a repairable failure
+        journal.append("repair", "error", "no verification evidence available — repair requires real failure input");
+        return { error: "E_VERIFY_FAILED" };
+      }
+      const attempts = (state.repairAttempts ?? 0) + 1;
+      const gateway = new ToolGateway(defaultContext([state.workspacePath, join(config.repoRoot, "projects")]));
+      const backend = new LocalNodeBackend(gateway);
+      const previous = state.repairHistory ?? [];
+      let outcome: { repairAttempts: number; repairHistory: string[]; verification: ValidationResult | null; error: string } | null = null;
+      try {
+        const result = await executeRepair(
+          {
+            workspacePath: state.workspacePath,
+            blueprint: state.blueprint,
+            backend,
+            journal: { append: (node, level, message) => journal.append(node, level, message) },
+          },
+          { verification: state.verification!, attempt: attempts, maxAttempts: 2, previousSignatures: previous }
+        );
+        journal.append("repair", "info", `repair applied via '${result.strategy}'; regression baseline: ${result.rerun?.passed ? "PASSED" : "FAILED"}`);
+        outcome = {
+          repairAttempts: attempts,
+          repairHistory: [...previous, signatureOf(state.verification!)],
+          verification: result.rerun,
+          error: result.rerun?.passed ? "" : "dag-failures",
+        };
+      } catch (e) {
+        const code = e instanceof OmniforgeError ? e.code : "E_REPAIR_BUDGET_EXCEEDED";
+        journal.append("repair", "error", `repair blocked: ${code} — ${(e as Error).message.slice(0, 200)}`);
+        return {
+          repairAttempts: attempts,
+          repairHistory: [...previous, signatureOf(state.verification!)],
+          error: code,
+        };
+      }
+      // successful repair: reset failed DAG tasks so the next execute pass
+      // re-runs exactly the failed tasks + dependents (never passed tasks)
+      const dagCtx: DagContext = { journal, runsRoot: config.runsRoot, runId: state.runId, env: { workspacePath: state.workspacePath } };
+      const reset = resetFailedTasks(dagCtx);
+      journal.append("repair", "info", `reset ${reset} failed DAG task(s) for targeted re-execution`);
+      return outcome;
     })
     .addNode("approve", (state: OFState) => {
       journalOf(state).append("approve", "info", "no approval-gated actions in this plan (free-first, no deploy)");
       return {};
     })
     .addNode("package", (state: OFState) => {
+      const journal = journalOf(state);
+      if (state.artifactPath) {
+        journal.append("package", "info", `package phase: artifact from DAG ${state.artifactPath}`);
+        return {};
+      }
       if (config.skipExport) return {};
       const gateway = new ToolGateway(defaultContext([state.workspacePath, config.runsRoot]));
       const artifact = exportWorkspace(state.workspacePath, join(config.runsRoot, state.runId, "export"), gateway);
-      journalOf(state).append("package", "info", `exported artifact ${artifact.path}`);
+      journal.append("package", "info", `exported artifact ${artifact.path}`);
       return { artifactPath: artifact.path };
     })
     .addNode("deliver", (state: OFState) => {
       const journal = journalOf(state);
+      if (!state.artifactPath && config.skipExport) {
+        const ws = readWorkspaceConfig(state.workspacePath);
+        releaseLease(state.workspacePath, "workspace-manager");
+        journal.append("deliver", "info", `delivered workspace ${String(ws["id"])} (no export by config)`);
+        return {};
+      }
       const ws = readWorkspaceConfig(state.workspacePath);
       releaseLease(state.workspacePath, "workspace-manager");
       journal.append("deliver", "info", `delivered workspace ${String(ws["id"])} — preview: open dist/index.html or npx serve dist`);
@@ -319,9 +600,11 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         `workspace=${state.workspacePath}`,
         `verification=${state.verification?.passed ? "passed" : "failed"}`,
         `artifact=${state.artifactPath || "(skipped)"}`,
+        `dag=${state.dagSummary || "(none)"}`,
+        ...(state.error ? [`blocked=${state.error}`] : []),
       ].join(" ");
       journal.append("report", "info", `node:done:report ${summary}`);
-      journal.saveState({ request: state.request, runId: state.runId, status: "passed", workspacePath: state.workspacePath });
+      journal.saveState({ request: state.request, runId: state.runId, status: state.error && state.error !== "dag-failures" ? "blocked" : state.verification?.passed ? "passed" : "failed", workspacePath: state.workspacePath });
       return { runReport: summary };
     });
 
@@ -336,10 +619,24 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     .addEdge("plan", "prepare-workspace")
     .addEdge("prepare-workspace", "execute")
     .addEdge("execute", "verify")
-    .addConditionalEdges("verify", (state: OFState) =>
-      state.verification?.passed ? "approve" : state.repairAttempts < 2 ? "repair" : END
-    )
-    .addEdge("repair", "execute")
+    .addConditionalEdges("verify", (state: OFState) => {
+      if (state.error && state.error !== "dag-failures") return END; // typed blocker already recorded
+      if (state.error === "dag-failures") {
+        // a DAG task failed. If the workspace defects are repairable
+        // (verification has real failures), repair; otherwise the failure is
+        // environmental/integration — blocked honestly, never swallowed.
+        if (state.verification && !state.verification.passed) return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
+        return END;
+      }
+      if (state.verification?.passed) return "approve";
+      return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
+    })
+    .addConditionalEdges("repair", (state: OFState) => {
+      // repair that fixed verification cycles back through the DAG; a typed
+      // blocker (non-improving/budget/model-unavailable) ends the run
+      if (state.error && state.error !== "dag-failures") return END;
+      return "execute";
+    })
     .addEdge("approve", "package")
     .addEdge("package", "deliver")
     .addEdge("deliver", "report")
@@ -357,11 +654,30 @@ export interface RunResult {
   state: OFState;
 }
 
+const INITIAL_STATE = {
+  request: "",
+  runId: "",
+  intent: null,
+  researchNoteCount: 0,
+  blueprint: null,
+  selection: null,
+  templateId: "",
+  taskPlan: null,
+  workspacePath: "",
+  verification: null,
+  repairAttempts: 0,
+  repairHistory: [] as string[],
+  artifactPath: "",
+  runReport: "",
+  error: "",
+  dagSummary: "",
+};
+
 export async function createRun(request: string, config: ServiceConfig): Promise<RunResult> {
   const graph = buildGraph(config);
   const runId = newId("run");
   const final = await graph.invoke(
-    { request, runId, intent: null, researchNoteCount: 0, blueprint: null, selection: null, templateId: "", taskPlan: null, workspacePath: "", verification: null, repairAttempts: 0, artifactPath: "", runReport: "", error: "" },
+    { ...INITIAL_STATE, request, runId },
     { configurable: { thread_id: runId } }
   );
   return { runId, report: final.runReport, state: final };
@@ -382,4 +698,7 @@ export function runStatus(config: ServiceConfig, runId: string): { runId: string
   return { runId, journal: events, state: { hasCheckpoint, completed: journal.completedNodes() } };
 }
 
-export { MemorySaver };
+export { MemorySaver, detectCodingBackend };
+export { invokeSkill } from "./skills.js";
+export { executeDag, loadDagState, resetFailedTasks } from "./dag.js";
+export { executeRepair } from "./repair.js";
