@@ -256,3 +256,20 @@ container isolation), Android/Rust/Godot toolchains (native builds), model
 credentials (live model-assisted interpretation). All four are probed by
 `omniforge doctor`, produce typed blockers with setup instructions, and have
 executable opt-in tests that run the moment the prerequisite exists.
+
+### Final SHAs and CI (exact, this session)
+
+- Mission commit: `2e9afaa` (full universal upgrade; 237 tests).
+- `2e9afaa` CI startup_failure: the browser-E2E step name contained an unquoted
+  `: ` — invalid YAML (caught because the run had 0 jobs and the workflow name
+  rendered as the file path). Fixed in `536b302` (step name quoted; all four
+  workflow files validated with a YAML parser locally).
+- `536b302` CI failed at Test: the REA binary-analysis test assumed no docker,
+  but GitHub runners provide docker — an environment-dependent assumption.
+  Fixed in `9608efc` by injecting a deterministic sandbox probe into
+  `planAnalysis` (no-runtime refusal + with-docker acceptance both covered on
+  any host; 238 tests).
+- **Final: `9608efc` — CI success on `main`, including the REQUIRED-mode
+  browser E2E step (real chromium on the runner).** Total: 3 pushes, zero
+  re-runs, zero forks, read-only API calls otherwise; docs-only updates ride
+  the `**.md`/`docs/**` paths-ignore (no CI minutes).
