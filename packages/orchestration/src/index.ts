@@ -63,6 +63,7 @@ import { LocalNodeBackend, detectCodingBackend } from "@omniforge/agent-runtime"
 import { executeDag, resetFailedTasks, runGoverned, type DagContext, type TaskExecutor } from "./dag.js";
 import { executeRepair, signatureOf } from "./repair.js";
 import { composeAgentMvp } from "./agent-mvp.js";
+import { invokeSkill } from "./skills.js";
 
 /* ------------------------------------------------------------------ */
 /* Graph state                                                         */
@@ -412,24 +413,46 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           return { status: "passed", message: "scaffold-only (no executable step)", artifacts: [], evidence: [] };
         },
         verify: async () => {
-          const gateway = new ToolGateway(defaultContext([state.workspacePath]));
+          // repoRoot included: repo-owned skill entrypoints execute in the
+          // trusted repo domain (they are versioned with the codebase)
+          const gateway = new ToolGateway(defaultContext([state.workspacePath, config.repoRoot]));
           const backend = new LocalNodeBackend(gateway);
           const result = await verifyWorkspace({ workspacePath: state.workspacePath, blueprint: state.blueprint!, backend });
           dagCtx.env["verification"] = JSON.stringify(result);
           journal.append("verify", result.passed ? "info" : "warn", `verification vs ORIGINAL criteria: ${result.passed ? "passed" : "failed"} — ${result.failures.join(" | ").slice(0, 200) || "all checks ok"}`);
+          const evidence: Array<{ taskId: string; commandOrTool: string; environment: string; timestamp: string; exitStatus: string; artifactPaths: string[]; summary: string }> = result.checks.map((c) => ({
+            taskId: c.id,
+            commandOrTool: "verifyWorkspace",
+            environment: process.platform,
+            timestamp: nowIso(),
+            exitStatus: c.status,
+            artifactPaths: [],
+            summary: c.message,
+          }));
+          // C3: selected skills with executable entrypoints REALLY run — the
+          // testing skill's own suite gate executes through the gateway with
+          // typed JSON I/O; a failure fails the task (never log-only)
+          let skillFailure: string | null = null;
+          try {
+            const registry = new CapabilityRegistry([join(config.repoRoot, "skills")], join(config.repoRoot, "templates"));
+            if (registry.has("skill:testing") && registry.entrypointOf("skill:testing")) {
+              const inv = invokeSkill(gateway, config.repoRoot, registry, "skill:testing", { workspacePath: state.workspacePath }, { timeoutMs: 120_000 });
+              evidence.push(inv.evidence);
+              journal.append("verify", inv.status === "passed" ? "info" : "warn", `skill:testing entrypoint executed (exit ${inv.exitCode}, ${inv.durationMs}ms): ${inv.message.slice(0, 140)}`);
+              if (inv.status === "failed") skillFailure = `skill:testing entrypoint failed: ${inv.message.slice(0, 200)}`;
+            }
+          } catch (e) {
+            // a broken skill integration is a typed failure, not silence
+            skillFailure = `skill invocation error: ${(e as Error).message.slice(0, 200)}`;
+          }
+          if (skillFailure) {
+            return { status: "failed" as const, message: skillFailure, artifacts: [], evidence };
+          }
           return {
             status: result.passed ? ("passed" as const) : ("failed" as const),
             message: result.passed ? "all acceptance criteria passed" : result.failures.join(" | ").slice(0, 300),
             artifacts: [],
-            evidence: result.checks.map((c) => ({
-              taskId: c.id,
-              commandOrTool: "verifyWorkspace",
-              environment: process.platform,
-              timestamp: nowIso(),
-              exitStatus: c.status,
-              artifactPaths: [],
-              summary: c.message,
-            })),
+            evidence,
           };
         },
         package: async (node: TaskNode) => {
@@ -598,6 +621,13 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     .addEdge("execute", "verify")
     .addConditionalEdges("verify", (state: OFState) => {
       if (state.error && state.error !== "dag-failures") return END; // typed blocker already recorded
+      if (state.error === "dag-failures") {
+        // a DAG task failed. If the workspace defects are repairable
+        // (verification has real failures), repair; otherwise the failure is
+        // environmental/integration — blocked honestly, never swallowed.
+        if (state.verification && !state.verification.passed) return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
+        return END;
+      }
       if (state.verification?.passed) return "approve";
       return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
     })
@@ -669,3 +699,6 @@ export function runStatus(config: ServiceConfig, runId: string): { runId: string
 }
 
 export { MemorySaver, detectCodingBackend };
+export { invokeSkill } from "./skills.js";
+export { executeDag, loadDagState, resetFailedTasks } from "./dag.js";
+export { executeRepair } from "./repair.js";

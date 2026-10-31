@@ -4,6 +4,7 @@ description: "Evidence-based verification: acceptance criteria mapped to executa
 version: 0.1.0
 license: MIT
 capabilities: [testing, verification, evidence]
+entrypoint: scripts/run-project-tests.mjs
 cost: free
 ---
 

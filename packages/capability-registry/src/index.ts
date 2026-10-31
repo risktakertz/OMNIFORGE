@@ -20,6 +20,8 @@ export interface SkillMeta {
   path: string;
   license?: string;
   allowedTools?: string[];
+  /** relative path to the executable entrypoint (scripts/<name>.mjs), if declared */
+  entrypoint?: string;
   metadata?: Record<string, unknown>;
   validationErrors: string[];
 }
@@ -45,6 +47,17 @@ function readSkillFile(path: string): { frontmatter: Record<string, unknown>; bo
 
 function validateSkill(meta: SkillMeta, dir: string, body: string): string[] {
   const errors: string[] = [];
+  // executable entrypoint (mission C3): a skill may declare an actual
+  // invocation entrypoint. Declared but missing => blocked, never simulated.
+  const entrypoint = meta.metadata?.entrypoint;
+  if (entrypoint !== undefined) {
+    const ep = String(entrypoint);
+    if (!/^scripts\/[A-Za-z0-9._-]+\.mjs$/.test(ep)) {
+      errors.push(`entrypoint must reference scripts/<name>.mjs (got "${ep}")`);
+    } else if (!existsSync(join(dir, ep))) {
+      errors.push(`declared entrypoint missing: ${ep}`);
+    }
+  }
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(meta.name)) {
     errors.push(`name must be lowercase hyphen-quine (got "${meta.name}")`);
   }
@@ -100,6 +113,7 @@ export function scanSkillDirs(dirs: string[]): ScanResult {
           description: String(parsed.frontmatter.description ?? ""),
           path: dir,
           ...(typeof parsed.frontmatter.license === "string" ? { license: parsed.frontmatter.license } : {}),
+          ...(parsed.frontmatter.entrypoint ? { entrypoint: String(parsed.frontmatter.entrypoint) } : {}),
           ...(parsed.frontmatter["allowed-tools"] ? { allowedTools: String(parsed.frontmatter["allowed-tools"]).split(",").map((s) => s.trim()) } : {}),
           metadata: parsed.frontmatter,
           validationErrors: [],
@@ -134,7 +148,9 @@ export function skillToCapability(meta: SkillMeta): CapabilityT {
     availability: meta.validationErrors.length === 0 ? "configured" : "blocked",
     risk: "low",
     cost: (meta.metadata?.cost as CapabilityT["cost"]) ?? "free",
-    healthCheck: "registry:frontmatter-valid",
+    healthCheck: meta.metadata?.entrypoint
+      ? `skill:entrypoint ${String(meta.metadata.entrypoint)} (executed with typed JSON stdin/stdout under the gateway)`
+      : "registry:frontmatter-valid",
   });
 }
 
@@ -244,6 +260,13 @@ export class CapabilityRegistry {
   issues(): SkillIssue[] {
     this.ensure();
     return this.lastScan?.issues ?? [];
+  }
+
+  /** Relative entrypoint path for a skill, or null when it has none. */
+  entrypointOf(id: string): string | null {
+    this.ensure();
+    const meta = this.lastScan?.skills.find((sk) => `skill:${sk.id}` === id);
+    return meta?.entrypoint ?? null;
   }
 
   validateAll(): { valid: boolean; errors: SkillIssue[]; skillErrors: Array<{ id: string; errors: string[] }> } {
