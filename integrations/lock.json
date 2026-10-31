@@ -1,0 +1,33 @@
+{
+  "$comment": "OMNIFORGE integration lock — resolved versions recorded at bootstrap. Re-record on every dependency update. Never use uncontrolled 'latest' in repeatable builds.",
+  "recordedAt": "2026-10-31T08:30:00Z",
+  "toolchain": {
+    "node": ">=20.11 (verified on 24.22.1)",
+    "pnpm": "9.15.9",
+    "typescript": "^5.7.3",
+    "turbo": "^2.3.3",
+    "vitest": "^2.1.8",
+    "eslint": "^9.18.0",
+    "typescript-eslint": "^8.20.0"
+  },
+  "runtime": {
+    "zod": "^3.24.1",
+    "yaml": "^2.7.0",
+    "@langchain/langgraph": "0.2.74",
+    "@langchain/langgraph-checkpoint": "~0.0.18",
+    "@langchain/core": "^0.3.50"
+  },
+  "templatePins": {
+    "next-web": { "next": "^15.1.6", "react": "^19.0.0" },
+    "astro-business": { "astro": "^5.2.5" },
+    "expo-mobile": { "expo": "~53.0.0", "react-native": "0.79.1" },
+    "tauri-desktop": { "tauri": "2" },
+    "phaser-2d": { "phaserCdn": "https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" }
+  },
+  "policy": {
+    "FREE_FIRST_MODE": true,
+    "AUTO_PROVISION_PAID": false,
+    "APPROVED_SPEND": 0,
+    "updateStrategy": "staged: catalog re-review -> compatibility smoke -> lock re-record -> changelog; no mass upgrades"
+  }
+}

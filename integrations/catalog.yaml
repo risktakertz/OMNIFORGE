@@ -1,0 +1,378 @@
+# OMNIFORGE upstream integration catalog
+#
+# Tier: C = foundation, P = prioritized capability, O = optional/on-demand, X = evaluate only.
+# Status vocabulary (honest, matches packages/shared-types Availability):
+#   verified    - smoke-tested operational in this repository
+#   configured  - present/loadable, not yet operationally proven here
+#   untested    - recorded with a documented integration path, not yet exercised
+#   blocked     - prerequisites absent (toolchain/credentials); never simulated
+#
+# Licenses were reviewed against official sources at bootstrap (2026-10-31) and
+# MUST be re-verified at each integration update (docs/LICENSE_COMPLIANCE.md).
+# Cost reflects the project's own license/pricing posture, not your usage bill.
+
+version: 1
+recorded: "2026-10-31"
+
+integrations:
+  # ---- 3.1 intelligence, orchestration, skills, coding --------------------
+  - name: langgraphjs
+    url: https://github.com/langchain-ai/langgraphjs
+    tier: C
+    license: MIT
+    integration-mode: library
+    status: verified
+    cost: free
+    adapter: packages/orchestration
+    notes: "Pinned 0.2.74; state graph + durable file checkpointer (tests/orchestration)."
+
+  - name: agent-skills-spec
+    url: https://github.com/agentskills/agentskills
+    tier: C
+    license: MIT
+    integration-mode: spec
+    status: verified
+    cost: free
+    adapter: packages/capability-registry
+    notes: "SKILL.md frontmatter parsing + validation implemented; no execution during discovery."
+
+  - name: mcp-typescript-sdk
+    url: https://github.com/modelcontextprotocol/typescript-sdk
+    tier: C
+    license: MIT
+    integration-mode: planned-library
+    status: untested
+    cost: free
+    adapter: integrations/adapters/playwright-mcp
+    notes: "Tool-gateway interface is MCP-shaped; concrete client wiring lands with the first live MCP endpoint."
+
+  - name: openspec
+    url: https://github.com/Fission-AI/OpenSpec
+    tier: C
+    license: MIT
+    integration-mode: cli-adapter
+    status: untested
+    cost: free
+    adapter: integrations/adapters/openspec
+    notes: "Spec lifecycle currently file-based (docs/decisions); CLI adapter documented."
+
+  - name: gstack
+    url: https://github.com/garrytan/gstack
+    tier: C
+    license: review-required
+    integration-mode: methodology
+    status: configured
+    cost: free
+    adapter: integrations/adapters/gstack
+    notes: "Advisory methodology only; never a second source of truth. Host smoke test pending."
+
+  - name: superpowers
+    url: https://github.com/obra/superpowers
+    tier: C
+    license: MIT
+    integration-mode: methodology
+    status: configured
+    cost: free
+    adapter: integrations/adapters/superpowers
+    notes: "TDD/debug/review methods adopted under the single orchestration owner."
+
+  - name: rea
+    url: https://github.com/morluto/rea
+    tier: C
+    license: review-required
+    integration-mode: mcp-adapter
+    status: blocked
+    cost: conditional
+    adapter: integrations/adapters/rea
+    notes: "Authorization-gated; no analysis occurs without a recorded authorization basis. Native engines not installed."
+
+  - name: playwright-mcp
+    url: https://github.com/microsoft/playwright-mcp
+    tier: C
+    license: Apache-2.0
+    integration-mode: mcp-adapter
+    status: untested
+    cost: free
+    adapter: integrations/adapters/playwright-mcp
+    notes: "Browser validation via MCP pending a local browser install."
+
+  - name: playwright
+    url: https://github.com/microsoft/playwright
+    tier: C
+    license: Apache-2.0
+    integration-mode: dev-dependency
+    status: untested
+    cost: free
+    adapter: tests/e2e
+    notes: "E2E harness detects browser availability and SKIPS honestly when absent — never fakes results."
+
+  - name: repomix
+    url: https://github.com/yamadashy/repomix
+    tier: C
+    license: MIT
+    integration-mode: cli-adapter
+    status: untested
+    cost: free
+    adapter: integrations/adapters/repomix
+    notes: "Used on-demand for authorized repo analysis (omniforge inspect path)."
+
+  - name: opencode
+    url: https://github.com/anomalyco/opencode
+    tier: C
+    license: review-required
+    integration-mode: cli-adapter
+    status: blocked
+    cost: free
+    adapter: packages/agent-runtime (OpenCodeBackend)
+    notes: "Adapter reports truthfully when the CLI is absent; becomes selectable only after a live smoke task."
+
+  - name: openhands-sdk
+    url: https://github.com/OpenHands/software-agent-sdk
+    tier: P
+    license: MIT
+    integration-mode: process-adapter
+    status: untested
+    cost: free
+    adapter: integrations/adapters/openhands
+    notes: "Python agent server + documented API; no invented JS SDK."
+
+  - name: context7
+    url: https://github.com/upstash/context7
+    tier: P
+    license: review-required
+    integration-mode: hosted-api
+    status: blocked
+    cost: conditional
+    adapter: packages/research-engine (HostedDocsProvider)
+    notes: "Requires credentials + accepted terms; provider reports E_BACKEND_UNAVAILABLE until then."
+
+  - name: promptfoo
+    url: https://github.com/promptfoo/promptfoo
+    tier: P
+    license: MIT
+    integration-mode: dev-dependency
+    status: untested
+    cost: free
+    adapter: tests/routing-evals
+    notes: "Routing evals ship as deterministic fixtures; promptfoo harness documented for LLM-backed evals."
+
+  - name: ollama
+    url: https://github.com/ollama/ollama
+    tier: O
+    license: MIT
+    integration-mode: local-service
+    status: untested
+    cost: free
+    adapter: packages/model-router (probeOllama)
+    notes: "Probed at doctor/models time; requires local install + capable hardware."
+
+  - name: llama-cpp
+    url: https://github.com/ggml-org/llama.cpp
+    tier: O
+    license: MIT
+    integration-mode: local-binary
+    status: untested
+    cost: free
+    adapter: integrations/adapters/local-models
+    notes: "Alternative local inference; hardware suitability check required."
+
+  # ---- 3.2 product creation engines and frameworks ------------------------
+  - name: turborepo
+    url: https://github.com/vercel/turborepo
+    tier: C
+    license: MIT
+    integration-mode: dev-dependency
+    status: verified
+    cost: free
+    adapter: turbo.json
+    notes: "Build/typecheck task graph across the workspace."
+
+  - name: shadcn-ui
+    url: https://github.com/shadcn-ui/ui
+    tier: C
+    license: MIT
+    integration-mode: on-demand-components
+    status: untested
+    cost: free
+    adapter: integrations/adapters/commerce
+    notes: "Component source copied INTO generated React apps when used — never installed globally here."
+
+  - name: astro
+    url: https://github.com/withastro/astro
+    tier: C
+    license: MIT
+    integration-mode: template
+    status: configured
+    cost: free
+    adapter: templates/astro-business
+    notes: "Template ships; dependency install + build verified via integration workflow (on demand)."
+
+  - name: nextjs
+    url: https://github.com/vercel/next.js
+    tier: C
+    license: MIT
+    integration-mode: template
+    status: configured
+    cost: free
+    adapter: templates/next-web
+    notes: "Same on-demand build verification model; hosting commercial terms rechecked at deploy time."
+
+  - name: expo
+    url: https://github.com/expo/expo
+    tier: C
+    license: MIT
+    integration-mode: template
+    status: configured
+    cost: conditional
+    adapter: templates/expo-mobile
+    notes: "Local builds need Android SDK; cloud (EAS) builds are paid — blocked honestly without either."
+
+  - name: tauri
+    url: https://github.com/tauri-apps/tauri
+    tier: P
+    license: MIT
+    integration-mode: template
+    status: configured
+    cost: free
+    adapter: templates/tauri-desktop
+    notes: "Rust toolchain required for builds; signing is a separate approved milestone."
+
+  - name: electron
+    url: https://github.com/electron/electron
+    tier: O
+    license: MIT
+    integration-mode: template
+    status: blocked
+    cost: free
+    adapter: docs/ROADMAP.md
+    notes: "Only for confirmed Node-specific desktop requirements; no template shipped yet."
+
+  - name: supabase
+    url: https://github.com/supabase/supabase
+    tier: C
+    license: Apache-2.0
+    integration-mode: hosted-adapter
+    status: untested
+    cost: conditional
+    adapter: integrations/adapters/commerce
+    notes: "Postgres/auth/storage when a product justifies a backend; local CLI dev is not hardened hosting."
+
+  - name: medusa
+    url: https://github.com/medusajs/medusa
+    tier: P
+    license: MIT (open-core; enterprise dirs separate)
+    integration-mode: planned-adapter
+    status: untested
+    cost: conditional
+    adapter: integrations/adapters/commerce
+    notes: "Not bundled into templates; enterprise directories must never be vendored."
+
+  - name: activepieces
+    url: https://github.com/activepieces/activepieces
+    tier: P
+    license: MIT (community) + restrictive enterprise dirs
+    integration-mode: planned-adapter
+    status: untested
+    cost: conditional
+    adapter: integrations/adapters/automation
+    notes: "Community edition only when license-eligible and justified; enterprise folders excluded."
+
+  - name: phaser
+    url: https://github.com/phaserjs/phaser
+    tier: C
+    license: MIT
+    integration-mode: cdn-runtime
+    status: configured
+    cost: free
+    adapter: templates/phaser-2d
+    notes: "Pinned CDN build in template; self-host path documented."
+
+  - name: godot
+    url: https://github.com/godotengine/godot
+    tier: C
+    license: MIT
+    integration-mode: external-engine
+    status: blocked
+    cost: free
+    adapter: templates/godot-native
+    notes: "Engine stays OUTSIDE the pnpm/turbo graph; validation blocked without the binary, never faked."
+
+  - name: threejs
+    url: https://github.com/mrdoob/three.js
+    tier: P
+    license: MIT
+    integration-mode: template
+    status: untested
+    cost: free
+    adapter: docs/ROADMAP.md
+    notes: "Browser-3D template lands with the first 3D-web product need."
+
+  - name: react-three-fiber
+    url: https://github.com/pmndrs/react-three-fiber
+    tier: P
+    license: MIT
+    integration-mode: template
+    status: untested
+    cost: free
+    adapter: docs/ROADMAP.md
+    notes: "React/three version compatibility validated at integration time."
+
+  - name: blender
+    url: https://github.com/blender/blender
+    tier: O
+    license: GPL-2.0-or-later
+    integration-mode: external-tool
+    status: blocked
+    cost: free
+    adapter: integrations/adapters/local-models
+    notes: "Invoked as an installed binary only; GPL obligations respected (no source vendoring)."
+
+  - name: storybook
+    url: https://github.com/storybookjs/storybook
+    tier: P
+    license: MIT
+    integration-mode: dev-dependency
+    status: untested
+    cost: free
+    adapter: docs/ROADMAP.md
+    notes: "For shared UI systems once a second React consumer exists."
+
+  - name: maestro
+    url: https://github.com/mobile-dev-inc/Maestro
+    tier: P
+    license: Apache-2.0
+    integration-mode: cli-adapter
+    status: blocked
+    cost: free
+    adapter: docs/ROADMAP.md
+    notes: "Needs devices/emulators; flows documented, runs only when hardware exists."
+
+  - name: trivy
+    url: https://github.com/aquasecurity/trivy
+    tier: C
+    license: Apache-2.0
+    integration-mode: ci-scanner
+    status: configured
+    cost: free
+    adapter: .github/workflows/security.yml
+    notes: "Scheduled + dispatch-only scans; local runs when installed (doctor detects)."
+
+  - name: coolify
+    url: https://github.com/coollabsio/coolify
+    tier: O
+    license: Apache-2.0
+    integration-mode: self-hosted-adapter
+    status: blocked
+    cost: conditional
+    adapter: integrations/adapters/deployment
+    notes: "Requires existing server infrastructure; Coolify itself provides no free server."
+
+  - name: remotion
+    url: https://github.com/remotion-dev/remotion
+    tier: O
+    license: custom (free/commercial eligibility policy)
+    integration-mode: planned-adapter
+    status: blocked
+    cost: conditional
+    adapter: docs/LICENSE_COMPLIANCE.md
+    notes: "Special license reviewed per use case before any adoption."
