@@ -1,0 +1,7 @@
+{
+  "game": {
+    "title": "Star Dash",
+    "description": "Dodge the amber rocks, collect purple stars, beat your best score.",
+    "obstacleCount": 7
+  }
+}

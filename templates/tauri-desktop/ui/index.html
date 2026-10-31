@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sample Notes</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #fafaf9; color: #1c1917; margin: 0; display: grid; place-items: center; min-height: 100vh; }
+    .card { background: #fff; border: 1px solid #e7e5e4; border-radius: 14px; padding: 24px; width: min(520px, 92vw); }
+    h1 { color: #0f766e; font-size: 1.3rem; margin-top: 0; }
+    textarea { width: 100%; min-height: 140px; font: inherit; padding: 10px; border: 1px solid #d6d3d1; border-radius: 8px; box-sizing: border-box; }
+    button { background: #f59e0b; border: 0; font-weight: 700; padding: 9px 16px; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sample Notes</h1>
+    <p>Desktop starter: your notes persist in this window's localStorage. Tauri commands (filesystem, OS integration) are the next milestone — kept out of the starter to keep the security surface minimal.</p>
+    <label for="note">New note</label>
+    <textarea id="note" placeholder="Write something…"></textarea>
+    <button id="save">Save note</button>
+    <ul id="notes"></ul>
+  </div>
+  <script>
+    const KEY = "of_notes";
+    const render = () => {
+      const notes = JSON.parse(localStorage.getItem(KEY) || "[]");
+      document.getElementById("notes").innerHTML = notes.map((n) => `<li>${n.text.replace(/[<>&]/g, "")} <small>(${n.at})</small></li>`).join("");
+    };
+    document.getElementById("save").onclick = () => {
+      const el = document.getElementById("note");
+      if (!el.value.trim()) return;
+      const notes = JSON.parse(localStorage.getItem(KEY) || "[]");
+      notes.unshift({ text: el.value.trim(), at: new Date().toLocaleString() });
+      localStorage.setItem(KEY, JSON.stringify(notes.slice(0, 50)));
+      el.value = "";
+      render();
+    };
+    render();
+  </script>
+</body>
+</html>

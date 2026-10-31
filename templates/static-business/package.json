@@ -1,0 +1,12 @@
+{
+  "name": "omniforge-template-static-business",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zero-dependency responsive business website template (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/render.mjs",
+    "test": "node tests/site.test.mjs",
+    "preview": "npx --yes serve dist"
+  }
+}

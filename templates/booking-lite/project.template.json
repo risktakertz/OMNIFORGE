@@ -1,0 +1,14 @@
+{
+  "business": {
+    "name": "Sample Studio",
+    "tagline": "Book your visit in under a minute.",
+    "description": "Choose a service, pick a free slot, confirm. Your booking is stored in this browser and shared to WhatsApp when you confirm."
+  },
+  "services": [
+    { "id": "s1", "name": "Consultation", "minutes": 30, "price": "Free" },
+    { "id": "s2", "name": "Standard session", "minutes": 60, "price": "$20" },
+    { "id": "s3", "name": "Premium session", "minutes": 90, "price": "$35" }
+  ],
+  "hours": { "open": 9, "close": 17, "slotMinutes": 30, "daysAhead": 14, "closedWeekends": true },
+  "contact": { "whatsapp": "", "phone": "+000 000 0000", "email": "hello@example.com" }
+}

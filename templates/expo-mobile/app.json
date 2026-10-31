@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Sample Restaurant",
+    "slug": "sample-restaurant",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android", "web"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.example.samplerestaurant" },
+    "android": { "package": "com.example.samplerestaurant", "permissions": [] },
+    "web": { "bundler": "metro" },
+    "extra": { "eas": { "projectId": "" } }
+  }
+}

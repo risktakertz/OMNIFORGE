@@ -1,0 +1,12 @@
+{
+  "name": "omniforge-template-commerce-lite",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zero-dependency storefront: catalog, search, cart, mock checkout, order history (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/render.mjs",
+    "test": "node tests/store.test.mjs",
+    "preview": "npx --yes serve dist"
+  }
+}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{GAME_TITLE}}</title>
+  <meta name="description" content="{{GAME_DESCRIPTION}}" />
+  <style>
+    body { margin: 0; background: {{BG}}; color: {{TEXT}}; font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; }
+    .wrap { text-align: center; }
+    h1 { color: {{PRIMARY}}; font-size: 1.3rem; }
+    #game { border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.15); max-width: 100%; }
+    .hint { color: #79716b; font-size: .85rem; max-width: 460px; margin: 12px auto; }
+    .fallback { background: #fef3c7; border-radius: 10px; padding: 14px; max-width: 460px; margin: 0 auto; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>{{GAME_TITLE}}</h1>
+    <div id="game"></div>
+    <noscript><p class="fallback">This game requires JavaScript.</p></noscript>
+    <p class="hint">Arrows / WASD to move, Space to restart after a crash. Score points by surviving and collecting stars. Works offline after first load except the Phaser library itself.</p>
+    <p class="fallback" id="phaser-fallback" hidden>Phaser could not load (no internet?). The game logic itself is dependency-free and covered by <code>npm test</code>.</p>
+  </div>
+  <script>
+    // honest offline handling: show a visible fallback instead of a blank canvas
+    window.addEventListener("load", function () {
+      setTimeout(function () {
+        if (!window.__GAME_STARTED__) document.getElementById("phaser-fallback").hidden = false;
+      }, 2500);
+    });
+  </script>
+  <script src="{{PHASER_URL}}"></script>
+  <script type="module" src="./game.js"></script>
+</body>
+</html>

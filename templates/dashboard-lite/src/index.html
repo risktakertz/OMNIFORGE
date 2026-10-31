@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="{{LOCALE}}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{DASHBOARD_NAME}}</title>
+  <meta name="description" content="{{ORG}} business dashboard (fixture data)" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <span class="brand">{{DASHBOARD_NAME}}</span>
+    <label class="ctl" for="role">Role
+      <select id="role">
+        <option value="viewer">viewer</option>
+        <option value="admin">admin</option>
+      </select>
+    </label>
+  </header>
+  <main id="main">
+    <div class="controls">
+      <label class="ctl" for="region">Region
+        <select id="region"><option value="all">all</option><option value="north">north</option><option value="south">south</option></select>
+      </label>
+      <label class="ctl" for="channel">Channel
+        <select id="channel"><option value="all">all</option><option value="retail">retail</option><option value="online">online</option></select>
+      </label>
+      <p id="role-note" class="muted" role="status" aria-live="polite"></p>
+    </div>
+    <section id="kpis" class="kpis" aria-label="Key metrics"></section>
+    <section class="panel" aria-label="Revenue trend">
+      <h2>Revenue trend</h2>
+      <div id="chart" class="chart"></div>
+    </section>
+    <section class="panel" aria-label="Filtered rows">
+      <h2>Rows <button id="export-btn" class="btn" hidden>Export CSV</button></h2>
+      <table>
+        <thead><tr><th>Date</th><th>Region</th><th>Channel</th><th>Revenue</th><th>Orders</th></tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </section>
+    <section id="admin-panel" class="panel" hidden aria-label="Admin panel">
+      <h2>Admin panel</h2>
+      <p>Only visible for the admin role — the boundary is enforced in <code>roles-logic</code> and covered by tests, not just CSS.</p>
+    </section>
+    <p class="muted">{{DASH_NOTE}}</p>
+  </main>
+  <script id="dashboard-config" type="application/json">{{CONFIG_JSON}}</script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

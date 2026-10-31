@@ -1,0 +1,10 @@
+{
+  "name": "omniforge-template-godot-native",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Godot 4 native 3D starter: project, main scene, player movement (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/structure.test.mjs"
+  }
+}

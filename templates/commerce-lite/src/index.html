@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="{{LOCALE}}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{STORE_NAME}} — Shop</title>
+  <meta name="description" content="{{TAGLINE}}" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#main">{{STORE_NAME}}</a>
+    <div class="topbar-actions">
+      <label class="search-label" for="search">Search products
+        <input id="search" type="search" placeholder="Search products…" autocomplete="off" />
+      </label>
+      <button id="orders-btn" class="ghost" aria-label="Order history">Orders</button>
+      <button id="cart-btn" class="btn" aria-label="Open cart">Cart (<span id="cart-count">0</span>)</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <p class="tagline">{{TAGLINE}}</p>
+    <div id="category-chips" class="chips" role="group" aria-label="Filter by category"></div>
+    <section id="product-grid" class="grid" aria-label="Products"></section>
+    <p id="empty-state" class="empty" hidden>No products match your search. Try different words.</p>
+
+    <section id="orders-view" class="panel" hidden aria-labelledby="orders-heading">
+      <h2 id="orders-heading">Order history <span class="muted">(stored in this browser only)</span></h2>
+      <div id="orders-list"></div>
+      <button id="close-orders" class="ghost">Back to shop</button>
+    </section>
+  </main>
+
+  <aside id="cart-drawer" class="drawer" hidden aria-label="Shopping cart">
+    <h2>Your cart</h2>
+    <ul id="cart-items" class="cart-list"></ul>
+    <p class="total">Total: <strong>{{CURRENCY}} <span id="cart-total">0.00</span></strong></p>
+    <button id="checkout-btn" class="btn btn-primary" {{CHECKOUT_DISABLED_ATTR}}>Checkout (mock)</button>
+    <p class="mock-note">This demo uses a <strong>mock checkout</strong> — no real payment is processed and no card data is collected.</p>
+    <button id="close-cart" class="ghost">Continue shopping</button>
+  </aside>
+
+  <div id="dialog" class="dialog" hidden aria-modal="true" role="dialog" aria-labelledby="dialog-title">
+    <div class="dialog-card">
+      <h3 id="dialog-title"></h3>
+      <div id="dialog-body"></div>
+      <button id="dialog-close" class="btn">Close</button>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>&copy; {{YEAR}} {{STORE_NAME}} — demo storefront. Original template, MIT licensed (see THIRD-PARTY-NOTICES.md).</p>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

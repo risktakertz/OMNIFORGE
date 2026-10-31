@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="{{LOCALE}}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{BUSINESS_NAME}} — Book</title>
+  <meta name="description" content="{{TAGLINE}}" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <main id="main">
+    <header class="hero">
+      <h1>{{BUSINESS_NAME}}</h1>
+      <p class="tagline">{{TAGLINE}}</p>
+      <p class="lead">{{DESCRIPTION}}</p>
+    </header>
+
+    <section aria-labelledby="steps-heading" class="panel">
+      <h2 id="steps-heading">Book a visit</h2>
+      <fieldset>
+        <legend>1. Choose a service</legend>
+        <div id="service-list" class="services"></div>
+      </fieldset>
+      <fieldset>
+        <legend>2. Pick a day</legend>
+        <label for="day-select">Day
+          <select id="day-select"></select>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>3. Pick a free time</legend>
+        <div id="slot-grid" class="slots"></div>
+      </fieldset>
+      <p id="status" role="status" aria-live="polite"></p>
+      <button id="confirm-btn" class="btn btn-primary">Confirm booking</button>
+      <p class="muted">Demo mode: bookings are stored in this browser and (optionally) shared to WhatsApp. No external calendar or SMS is contacted.</p>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <p>&copy; {{YEAR}} {{BUSINESS_NAME}} — original OMNIFORGE template, MIT licensed (see THIRD-PARTY-NOTICES.md).</p>
+  </footer>
+  <script id="booking-config" type="application/json">{{CONFIG_JSON}}</script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

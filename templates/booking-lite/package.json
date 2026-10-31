@@ -1,0 +1,12 @@
+{
+  "name": "omniforge-template-booking-lite",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zero-dependency booking page: services, slots, WhatsApp confirmation (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/render.mjs",
+    "test": "node tests/booking.test.mjs",
+    "preview": "npx --yes serve dist"
+  }
+}

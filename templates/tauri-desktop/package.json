@@ -1,0 +1,10 @@
+{
+  "name": "omniforge-template-tauri-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tauri 2 desktop starter: tiny web UI + Rust shell (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/structure.test.mjs"
+  }
+}

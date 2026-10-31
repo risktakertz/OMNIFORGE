@@ -1,0 +1,12 @@
+{
+  "name": "omniforge-template-phaser-2d",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser 2D game: Phaser scene + pure logic module tested in Node (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/render.mjs",
+    "test": "node tests/game.test.mjs",
+    "preview": "npx --yes serve dist"
+  }
+}

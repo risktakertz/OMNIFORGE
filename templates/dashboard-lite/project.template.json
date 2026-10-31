@@ -1,0 +1,20 @@
+{
+  "dashboard": {
+    "name": "Sample Dashboard",
+    "org": "Sample Org",
+    "note": "Fixture data for demonstration — replace with a real, approved data source before production claims."
+  },
+  "metrics": [
+    { "date": "2026-01-01", "region": "north", "channel": "retail", "revenue": 1200, "orders": 30 },
+    { "date": "2026-01-01", "region": "south", "channel": "online", "revenue": 900, "orders": 25 },
+    { "date": "2026-01-02", "region": "north", "channel": "online", "revenue": 1500, "orders": 41 },
+    { "date": "2026-01-02", "region": "south", "channel": "retail", "revenue": 700, "orders": 18 },
+    { "date": "2026-01-03", "region": "north", "channel": "retail", "revenue": 1100, "orders": 27 },
+    { "date": "2026-01-03", "region": "south", "channel": "online", "revenue": 1650, "orders": 38 }
+  ],
+  "roles": {
+    "viewer": { "canExportCsv": false, "sections": ["overview"] },
+    "admin": { "canExportCsv": true, "sections": ["overview", "admin-panel"] }
+  },
+  "defaultRole": "viewer"
+}

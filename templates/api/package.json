@@ -1,0 +1,17 @@
+{
+  "name": "omniforge-template-api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Typed zero-dependency HTTP API starter: strict TS, validated input, health check, node:test suite.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.5"
+  }
+}

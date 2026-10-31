@@ -1,0 +1,25 @@
+---
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <slot />
+  </body>
+</html>
+<style is:global>
+  body { font-family: system-ui, sans-serif; background: #fafaf9; color: #1c1917; margin: 0; line-height: 1.6; }
+  .skip { position: absolute; left: -9999px; background: #0f766e; color: #fff; padding: 8px 14px; }
+  .skip:focus { left: 0; }
+</style>

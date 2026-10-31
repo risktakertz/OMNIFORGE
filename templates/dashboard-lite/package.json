@@ -1,0 +1,12 @@
+{
+  "name": "omniforge-template-dashboard-lite",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zero-dependency business dashboard: KPIs, filters, SVG chart, role boundaries (original, MIT).",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/render.mjs",
+    "test": "node tests/dashboard.test.mjs",
+    "preview": "npx --yes serve dist"
+  }
+}
