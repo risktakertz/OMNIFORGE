@@ -1,0 +1,19 @@
+{
+  "name": "@omniforge/shared-types",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Versioned OMNIFORGE domain contracts: Zod schemas, types, error codes, events.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}
