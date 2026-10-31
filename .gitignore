@@ -1,0 +1,30 @@
+# dependencies / builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+
+# environment / secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# generated client projects are isolated and ignored by default (export explicitly)
+projects/*
+!projects/.gitkeep
+
+# durable run state (evidence is retained on disk; committed evidence goes through curated fixtures)
+infra/runs/
+infra/checkpoint-db/*.sqlite*
+
+# template build outputs
+templates/*/dist/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# tool caches / durable graph checkpoints
+.turbo/
+infra/checkpoint-db/*/

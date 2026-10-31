@@ -1,0 +1,70 @@
+name: Integration builds
+
+# Heavy template builds are verified ON DEMAND (workflow_dispatch) so routine
+# pushes stay lean. Results flip the catalog statuses in integrations/catalog.yaml.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  next-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+        working-directory: templates/next-web
+      - run: npm test
+        working-directory: templates/next-web
+      - run: npm run build
+        working-directory: templates/next-web
+
+  astro-business:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+        working-directory: templates/astro-business
+      - run: npm test
+        working-directory: templates/astro-business
+      - run: npm run build
+        working-directory: templates/astro-business
+
+  api-template:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+        working-directory: templates/api
+      - run: npm test
+        working-directory: templates/api
+
+  static-templates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Zero-dependency template suites
+        run: |
+          set -e
+          for t in static-business commerce-lite booking-lite dashboard-lite phaser-2d godot-native expo-mobile tauri-desktop; do
+            echo "== $t =="
+            (cd "templates/$t" && node tests/*.test.mjs)
+          done

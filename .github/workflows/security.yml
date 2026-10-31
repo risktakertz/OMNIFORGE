@@ -1,0 +1,37 @@
+name: Security
+
+on:
+  schedule:
+    # monthly dependency/secrets/misconfiguration scan — keeps Actions minutes near zero
+    - cron: "0 3 2 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs scan (vulns + secrets + misconfig)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+          vuln-type: os,library
+
+      - name: Fail on committed .env files (belt and braces)
+        run: |
+          if git ls-files -- '*/.env' '.env' | grep -q .; then
+            echo "::error::a .env file is committed"; exit 1
+          fi

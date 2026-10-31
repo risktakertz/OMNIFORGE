@@ -1,0 +1,33 @@
+{
+  "name": "omniforge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OMNIFORGE — universal autonomous software creation monorepo (free-first, deterministic core, honest capability reporting).",
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "bin": {
+    "omniforge": "apps/cli/dist/index.js"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run",
+    "build": "turbo run build",
+    "e2e": "node tests/e2e/run.mjs",
+    "doctor": "node apps/cli/dist/index.js doctor",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm e2e",
+    "gen:skills": "node scripts/gen-skills.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "eslint": "^9.18.0",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^2.1.8"
+  }
+}
