@@ -1,0 +1,20 @@
+{
+  "name": "@omniforge/intent-engine",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Deterministic request interpretation (English + Swahili) with assumptions and unknowns.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*"
+  }
+}
