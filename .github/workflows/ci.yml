@@ -53,7 +53,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - name: Browser E2E (REQUIRED mode — §11.3: BLOCKED ≠ passed)
+      - name: "Browser E2E (REQUIRED mode, section 11.3 - BLOCKED must not pass)"
         run: |
           npx playwright install --with-deps chromium
           OF_E2E_REQUIRED=1 node tests/e2e/browser.e2e.mjs
