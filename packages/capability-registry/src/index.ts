@@ -145,6 +145,10 @@ export function templateCapabilities(templatesRoot: string): CapabilityT[] {
     const dir = join(templatesRoot, entry);
     if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue;
     if (!existsSync(join(dir, "package.json"))) continue;
+    // honest availability: template presence alone is NOT verification. A
+    // template is "configured" until its own suite has been observed passing
+    // (the repo's test suite records that evidence on every run).
+    const hasSelfTest = existsSync(join(dir, "tests")) && readdirSync(join(dir, "tests")).some((f) => f.endsWith(".test.mjs"));
     caps.push(
       Capability.parse({
         id: `template:${entry}`,
@@ -152,14 +156,40 @@ export function templateCapabilities(templatesRoot: string): CapabilityT[] {
         source: relative(process.cwd(), dir) || dir,
         version: "0.1.0",
         capabilities: [`scaffold-${entry}`],
-        availability: "verified",
+        availability: hasSelfTest ? "configured" : "untested",
         risk: "low",
         cost: "free",
-        healthCheck: "template:structure-tested",
+        healthCheck: hasSelfTest ? "template:self-test-declared (runs in repo suite)" : "none",
       })
     );
   }
   return caps;
+}
+
+/**
+ * Built-in generators (composable project factories — not copied templates).
+ * Availability is honest: "configured" until the acceptance suite observes a
+ * real generation + passing tests on this revision.
+ */
+export function generatorCapabilities(): CapabilityT[] {
+  return [
+    Capability.parse({
+      id: "generator:agent-mvp",
+      kind: "tool",
+      source: "packages/orchestration/src/agent-mvp.ts",
+      version: "0.1.0",
+      capabilities: ["compose-agent-mvp", "cli-agent-loop", "checkpoint-resume", "github-adapter", "allowlist-sandbox"],
+      inputSchemaRef: "omniforge://schemas/project-intent",
+      outputSchemaRef: "omniforge://schemas/workspace",
+      requirements: ["node >= 20"],
+      dependencies: [],
+      conflicts: [],
+      availability: "configured",
+      risk: "low",
+      cost: "free",
+      healthCheck: "acceptance:e2e-agent-mvp (repo suite observes generation + tests)",
+    }),
+  ];
 }
 
 export class CapabilityRegistry {
@@ -179,6 +209,9 @@ export class CapabilityRegistry {
       for (const t of templateCapabilities(this.templatesRoot)) {
         this.byId.set(t.id, t);
       }
+    }
+    for (const g of generatorCapabilities()) {
+      this.byId.set(g.id, g);
     }
     this.lastScan = result;
     return result;

@@ -133,6 +133,29 @@ const SCOPES: Record<string, KindScope> = {
       { id: "AC3", criterion: "No secrets in source", evidenceMethod: "no-secrets" },
     ],
   },
+  "agent-mvp": {
+    mvp: [
+      "CLI agent loop: plan -> edit -> test -> diff -> checkpoint (one command)",
+      "Pluggable model adapter (OpenAI-compatible via env credential) with an honestly-labeled deterministic offline planner",
+      "Durable checkpoint journal with exactly-once resume of interrupted jobs",
+      "GitHub repository adapter gated on GITHUB_TOKEN (clone/status/diff; push requires explicit approval)",
+      "Allowlist command sandbox (argument-array execution, no shell interpolation)",
+      "Action- and scope-specific approval gate for high-risk steps",
+      "Original test suite covering the loop, resume, sandbox and approvals",
+    ],
+    later: ["hosted multi-user service (separate approved milestone)", "real model quality evals once a provider is authorized", "browser UI"],
+    excluded: [...BASE_EXCLUDED, "deploying a public hosted service", "collecting payments", "using any branded model name or proprietary code"],
+    criteria: [
+      { id: "AC1", criterion: "Agent CLI entrypoint exists and is runnable", evidenceMethod: "file-exists:bin/agent.mjs" },
+      { id: "AC2", criterion: "Model adapter is pluggable and labels offline mode honestly", evidenceMethod: "file-exists:src/model-adapter.mjs" },
+      { id: "AC3", criterion: "Durable checkpoint journal exists", evidenceMethod: "file-exists:src/checkpoint.mjs" },
+      { id: "AC4", criterion: "GitHub adapter is credential-gated", evidenceMethod: "file-exists:src/github-adapter.mjs" },
+      { id: "AC5", criterion: "Allowlist sandbox module exists", evidenceMethod: "file-exists:src/sandbox.mjs" },
+      { id: "AC6", criterion: "Agent's own test suite passes (loop, resume, approvals)", evidenceMethod: "run-project-tests" },
+      { id: "AC7", criterion: "No secrets in generated source", evidenceMethod: "no-secrets" },
+      { id: "AC8", criterion: "Project structure is complete", evidenceMethod: "structure-check" },
+    ],
+  },
   engine: {
     mvp: ["Complete project structure for the target engine", "Core scene/entry files", "README with exact toolchain prerequisites", "Structural validation script"],
     later: ["signed builds", "store publishing (separate approved milestone)"],
@@ -151,6 +174,9 @@ const RE_DASHBOARD = /\b(dashboards?|metrics|analytics|kpis?|admin panels?)\b/;
 function pickScope(intent: ProjectIntent, family: Family): KindScope {
   const req = intent.explicitRequirements.join(" ").toLowerCase();
   const kinds = intent.productKinds;
+  // the decisive scenario: a cloud-ready AI coding agent MVP (original,
+  // composable runtime — never a copied template or a renamed REST scaffold)
+  if (kinds.includes("ai") && intent.domainHints.includes("coding-agent")) return SCOPES["agent-mvp"]!;
   if (family === "static") {
     if (kinds.includes("game-2d")) {
       return {

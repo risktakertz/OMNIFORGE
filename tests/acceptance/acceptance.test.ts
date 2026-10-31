@@ -98,7 +98,9 @@ describe("acceptance (short prompts -> real products)", () => {
     cli(["create", "Create a website for a bakery"]);
     const ws = latestWorkspace();
     const out = cli(["modify", ws, "set business.tagline Fresh daily"]);
-    expect(out).toMatch(/baseline: passed -> after: passed/);
+    expect(out).toMatch(/baseline \(original criteria\): passed -> after: passed/);
+    // the workspace carries the persisted ORIGINAL blueprint for regression
+    expect(existsSync(join(ws, "project.blueprint.json"))).toBe(true);
   }, 120_000);
 
   it("A10: 'Generate a SaaS product I can customize for shops.' -> two isolated client configs", () => {
@@ -115,13 +117,44 @@ describe("acceptance (short prompts -> real products)", () => {
     expect(existsSync(join(first, "tests", "structure.test.mjs"))).toBe(true);
   }, 180_000);
 
-  it("A11: zero budget -> zero unapproved billable actions + clear cost breakdown", () => {
-    const out = cli(["plan", "Create a product with no budget", "--json"]);
+  it("A11: unfamiliar prompt -> typed NOVEL gap (NEEDS_MODEL), never a fake product", () => {
+    let stderr = "";
+    try {
+      cli(["plan", "Create a product with no budget", "--json"]);
+      throw new Error("expected plan to refuse a novel prompt");
+    } catch (e) {
+      stderr = String((e as { stderr?: string }).stderr ?? (e as Error).message);
+    }
+    expect(stderr).toMatch(/E_INTENT_NOVEL/);
+  }, 60_000);
+
+  it("A11b: known prompt with zero budget -> 0 USD estimate and no paid approvals", () => {
+    const out = cli(["plan", "Create a website for a salon with no budget", "--json"]);
     const parsed = JSON.parse(out) as { estimatedCost: string; approvalsRequired: string[] };
     expect(parsed.estimatedCost).toMatch(/0 USD/);
     expect(parsed.approvalsRequired).toHaveLength(0);
-    // policy environment defaults enforced by the CLI runs (FREE_FIRST_MODE=true, APPROVED_SPEND=0)
   }, 60_000);
+
+  it("E2 (decisive): cloud coding agent MVP from one sentence -> composed original agent with passing tests", () => {
+    cli(["create", "Create an original cloud-ready AI coding agent like Claude Code that understands natural language, connects to my authorized GitHub repositories, safely edits code, runs tests, explains changes, and lets me resume interrupted work"]);
+    const ws = latestWorkspace();
+    const cfg = JSON.parse(readFileSync(join(ws, "project.config.json"), "utf8")) as { templateId: string };
+    expect(cfg.templateId).toBe("generator:agent-mvp");
+    // NOT a renamed template: an original composed runtime
+    for (const f of ["bin/agent.mjs", "src/model-adapter.mjs", "src/checkpoint.mjs", "src/github-adapter.mjs", "src/sandbox.mjs", "src/approvals.mjs", "tests/agent.test.mjs", "README.md", ".env.example"]) {
+      expect(existsSync(join(ws, f))).toBe(true);
+    }
+    // persisted original blueprint with agent-specific acceptance criteria
+    const bp = JSON.parse(readFileSync(join(ws, "project.blueprint.json"), "utf8")) as { acceptanceCriteria: Array<{ id: string }> };
+    expect(bp.acceptanceCriteria.length).toBeGreaterThanOrEqual(8);
+    // the generated agent's own suite passes (verified by the DAG run)
+    const store = cli(["test", ws, "--json"]);
+    expect(store).toMatch(/"passed"/);
+    // honest labeling: the offline planner is MOCK, model optional
+    const adapter = readFileSync(join(ws, "src", "model-adapter.mjs"), "utf8");
+    expect(adapter).toMatch(/MOCK/);
+    expect(adapter).toMatch(/OPENAI_API_KEY/);
+  }, 240_000);
 
   it("A03/A05: mobile + 3D scaffold honestly — verified structure, blocked engines labeled", () => {
     const plan3d = JSON.parse(cli(["plan", "Make a basic 3D adventure game", "--json"])) as { template: string };
