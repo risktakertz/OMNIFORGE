@@ -1,0 +1,22 @@
+{
+  "name": "@omniforge/workspace-manager",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Isolated project workspaces from templates: leases/locks, rendering, export with provenance.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*",
+    "@omniforge/tool-gateway": "workspace:*",
+    "@omniforge/observability": "workspace:*"
+  }
+}

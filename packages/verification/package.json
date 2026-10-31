@@ -1,0 +1,22 @@
+{
+  "name": "@omniforge/verification",
+  "private": true,
+  "version": "0.1.0",
+  "description": "File/artifact/behavior checks, evidence collection, failure classification and bounded repair policy.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*",
+    "@omniforge/agent-runtime": "workspace:*",
+    "@omniforge/observability": "workspace:*"
+  }
+}

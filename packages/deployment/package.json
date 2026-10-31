@@ -1,0 +1,20 @@
+{
+  "name": "@omniforge/deployment",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Deployment capability detection and free-first dry-run plans; real deploys require approval.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*"
+  }
+}
