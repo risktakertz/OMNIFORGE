@@ -54,13 +54,18 @@ if (direct) {
 }
 const r = spawnSync(cmd, args, { cwd: ws, encoding: "utf8", timeout: job.timeoutMs ?? 90_000, stdio: ["ignore", "pipe", "pipe"] });
 const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+// carry the RELEVANT failure content in the typed message (formatting
+// differs across node versions: failure markers first, summary as fallback)
+const interesting = lines.filter((l) => /\u2716|not ok|AssertionError|failing tests|# fail|Error:/i.test(l)).slice(0, 4);
+const failureMessage = (interesting.join(" | ") || lines.slice(-4).join(" | ")).slice(0, 500);
 process.stdout.write(
   JSON.stringify({
     skill: "testing",
     status: r.status === 0 ? "passed" : "failed",
     exitCode: r.status,
     command: [cmd, ...args].join(" "),
-    message: r.status === 0 ? "project suite passed" : out.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 500),
+    message: r.status === 0 ? "project suite passed" : failureMessage,
   }) + "\n"
 );
 process.exit(r.status === 0 ? 0 : 1);

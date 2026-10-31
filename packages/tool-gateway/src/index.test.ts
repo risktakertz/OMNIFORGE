@@ -65,10 +65,13 @@ describe("tool gateway (deterministic policy)", () => {
   });
 
   it("authorizeExec refuses shell strings, metacharacters and untrusted binaries without a sandbox", () => {
-    const gw = new ToolGateway(defaultContext([root]));
+    // inject the policy explicitly so the test is deterministic on hosts WITH
+    // and WITHOUT docker (CI runners have a container runtime)
+    const ctx = { ...defaultContext([root]), sandbox: { mode: "host-allowlist" as const, runtime: null, detail: "test policy" } };
+    const gw = new ToolGateway(ctx);
     // argv + allowlisted binary: allowed on the host
     expect(() => gw.authorizeExec("node", ["scripts/render.mjs"], { cwd: root })).not.toThrow();
-    // curl is NOT on the host allowlist and no container runtime exists here
+    // curl is NOT on the host allowlist and the policy has no container
     try {
       gw.authorizeExec("curl", ["https://example.invalid"], { cwd: root });
       throw new Error("expected refusal");
@@ -77,6 +80,12 @@ describe("tool gateway (deterministic policy)", () => {
     }
     // shell metacharacters in argv are refused outright
     expect(() => gw.authorizeExec("node", ["-e", "process.exit(0)"], { cwd: root })).toThrow(/E_GATEWAY_DENIED|metachar/i);
+  });
+
+  it("authorizeExec permits non-allowlisted binaries only in container mode", () => {
+    const ctx = { ...defaultContext([root]), sandbox: { mode: "container" as const, runtime: "docker", detail: "test policy" } };
+    const gw = new ToolGateway(ctx);
+    expect(() => gw.authorizeExec("curl", ["https://example.invalid"], { cwd: root })).not.toThrow();
   });
 
   it("resolveSandbox reports the honest mode for this host", () => {
