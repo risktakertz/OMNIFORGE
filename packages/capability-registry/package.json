@@ -1,0 +1,21 @@
+{
+  "name": "@omniforge/capability-registry",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Agent Skills discovery, frontmatter validation and capability indexing (no execution during scan).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*",
+    "yaml": "^2.7.0"
+  }
+}

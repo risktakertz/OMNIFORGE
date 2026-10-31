@@ -1,0 +1,20 @@
+{
+  "name": "@omniforge/task-planner",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dependency-aware task DAG with budgets, idempotency keys and cycle detection.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*"
+  }
+}

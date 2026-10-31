@@ -1,0 +1,21 @@
+{
+  "name": "@omniforge/skill-router",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hybrid deterministic routing: eligibility, dependency/conflict resolution, explainable ranking.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/capability-registry": "workspace:*",
+    "@omniforge/utils": "workspace:*"
+  }
+}
