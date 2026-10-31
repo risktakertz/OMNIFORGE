@@ -53,6 +53,23 @@ jobs:
       - run: npm test
         working-directory: templates/api
 
+  browser-e2e:
+    # REAL browser interactions (mission D1): chromium via Playwright against
+    # a freshly generated OMNIFORGE site — DOM render, nav anchors, contact
+    # form submit, mobile responsiveness.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: node tests/e2e/browser.e2e.mjs
+
   static-templates:
     runs-on: ubuntu-latest
     timeout-minutes: 10

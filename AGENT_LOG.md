@@ -97,3 +97,71 @@ npm registry and GitHub API. No forks created; no billable services touched.
 - GitHub usage discipline: zero forks, zero releases faked, ONE push of logical
   commits + one tag; heavy builds dispatched on demand only; public repo → free
   Actions minutes; no billable third-party service touched (APPROVED_SPEND=0).
+
+## 2026-10-31 — Autonomy & CI recovery session (surgical upgrade mission)
+
+**Branch:** `fix/omniforge-autonomy-ci` off `17af9da` (no force-push; baseline
+preserved). Directive: `OMNIFORGE_AUTONOMY_AND_CI_RECOVERY_MASTER_PROMPT.md`.
+Baseline audit with the incident matrix: `docs/audits/2026-10-31-autonomy-baseline-audit.md`.
+
+### B — CI recovery (verified via API, not notifications)
+- Repo history contains exactly four Actions runs: CI+Release failed on
+  `fc7c50e` (tests executed the built CLI before `pnpm build`), both green on
+  HEAD `17af9da`. Root cause and fix already on HEAD — incident recorded as
+  RESOLVED, not currently blocking. CI HEALTHY confirmed on the exact SHA.
+- GitHub usage discipline: 3 authenticated API calls total (runs list, failed
+  jobs, none wasted); no forks; no re-runs; routine pushes stay lean.
+
+### C/D — autonomy gaps closed (evidence-verified)
+- **C4:** the task plan now governs execution — `executeDag` with durable
+  per-task ledger, dependency readiness, timeouts, retry budgets, idempotent
+  resume; graph phases record into the same ledger; failed tasks can no
+  longer be outweighed by parallel signals.
+- **C5:** repair engine consumes real failures (classification + stderr +
+  persisted criteria), applies deterministic scoped fixers, reruns the
+  project suite plus the ORIGINAL acceptance criteria, stops typed
+  (non-improving / budget / model-missing).
+- **D1:** verification contract v2 — original blueprint persisted per
+  workspace; critical skipped/blocked/not-run can never PASS; independent
+  verifier compares original criteria vs observed evidence; `create`/`modify`
+  no longer synthesize pseudo-criteria; template registry honesty
+  (configured until self-test observed).
+- **C1:** CodingBackend v2 — real OpenCode adapter (`opencode run`, argv,
+  timeouts, redaction, live smoke gate with a novel seeded-bug task), honest
+  `unsupported` for the deterministic backend, cross-platform detection.
+  Live smoke marked BLOCKED on this host (no opencode binary / no model
+  credentials) with the executable test left in place.
+- **C2:** novelty gate — unmatched prompts return typed `E_INTENT_NOVEL`
+  (NEEDS_MODEL) instead of silently becoming bakery sites; coding-agent
+  domain recognition; explicit low-confidence inference for generic wording.
+- **C3:** executable skill entrypoints — `skills/testing` ships a real
+  entrypoint (typed JSON stdin/stdout) validated by the registry and actually
+  invoked by the DAG verify task through the gateway with evidence.
+- **D2:** enforced execution policy — sandbox probe (docker/podman, cross-
+  platform argv), host binary allowlist, argv-only (metachar refusal),
+  `E_SANDBOX_UNAVAILABLE` for untrusted host execution, scoped approvals
+  (action+targets+run; blanket apr_* dead), fail-loud denials.
+- **E2 (decisive):** `omniforge create "Create an original cloud-ready AI
+  coding agent like Claude Code ..."` composes an ORIGINAL agent-MVP project
+  (CLI loop, pluggable model adapter with honest MOCK labeling, exactly-once
+  checkpoint journal, credential-gated GitHub adapter, allowlist sandbox,
+  scoped approvals) whose own node:test suite passes; export verified; NOT a
+  renamed template and NOT falsely claimed as a hosted service.
+- **M4:** cross-process resume — two real OS processes, durable checkpoint +
+  dag-state, exactly-once workspace effects.
+
+### Final verification of this session (evidence)
+- `pnpm verify` green: lint 0 errors; typecheck+build 17/17 packages; tests
+  **174 passed / 0 failed** (incl. new routing evals: agent/novel/adversarial/
+  Swahili; autonomy suite: skill invocation + cross-process resume; gateway
+  adversarial: scoped approvals, sandbox refusal, metachar argv);
+  e2e 6 steps + **real browser E2E on chromium 143**: page load, brand render,
+  nav anchor scrolling, contact form fill+submit success state, mobile
+  viewport without horizontal overflow, screenshot captured.
+- Live acceptance evidence regenerated under `projects/` during e2e (git-
+  ignored); Playwright 1.57.0 pinned as devDependency; integration workflow
+  gained a dispatch-only `browser-e2e` job.
+- Honest gaps recorded: opencode binary, model credentials, container
+  runtime, Godot/Expo toolchains — all probed and reported by `doctor`; live
+  backend smoke and container isolation stay BLOCKED until the operator
+  supplies them. Nothing fabricated.

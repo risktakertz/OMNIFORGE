@@ -4,7 +4,7 @@
  *  - cross-process resume: a killed run resumes in a NEW process from the
  *    durable checkpoint store with exactly-once side effects
  */
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -5,7 +5,7 @@
  * `pnpm build` first. Browser-based E2E (Playwright) runs only when a browser
  * is installed; otherwise this suite reports the skip honestly.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,20 +78,18 @@ step("deploy stays gated: dry-run works, real deploy typed-blocked", () => {
   }
 });
 
-step("browser E2E availability reported honestly", () => {
-  let hasPlaywright = false;
-  try {
-    execFileSync("node", ["-e", "require.resolve('playwright')"], { cwd: repoRoot, stdio: "pipe" });
-    hasPlaywright = true;
-  } catch {
-    hasPlaywright = false;
-  }
-  if (hasPlaywright) {
-    console.log("   playwright detected — full browser e2e can run in the integration workflow");
-  } else {
-    console.log("   playwright not installed — browser e2e SKIPPED honestly (npm i -D playwright && npx playwright install chromium to enable)");
-  }
-});
+// real browser E2E: runs when a browser is available; BLOCKED (exit 0, honest
+// label) when not — never counted as a pass without a browser
+{
+  console.log("\nbrowser E2E phase:");
+  const r = spawnSync(process.execPath, [join(repoRoot, "tests", "e2e", "browser.e2e.mjs")], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 300_000,
+    stdio: "inherit",
+  });
+  if (r.status !== 0) failures.push("browser E2E");
+}
 
 // cleanup generated workspaces (they are git-ignored anyway)
 const dir = join(repoRoot, "projects");
