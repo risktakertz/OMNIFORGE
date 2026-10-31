@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="{{LOCALE}}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{PAGE_TITLE}}</title>
+  <meta name="description" content="{{SEO_DESCRIPTION}}" />
+  <meta property="og:title" content="{{PAGE_TITLE}}" />
+  <meta property="og:description" content="{{SEO_DESCRIPTION}}" />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="Main navigation">
+      <a class="brand" href="#top">{{BUSINESS_NAME}}</a>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-links" aria-label="Open menu">&#9776;</button>
+      <ul id="nav-links" class="nav-links">
+        <li><a href="#services">Services</a></li>
+        <li><a href="#about">About</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <h1>{{BUSINESS_NAME}}</h1>
+      <p class="tagline">{{TAGLINE}}</p>
+      <p class="lead">{{DESCRIPTION}}</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#contact">Contact us</a>
+        {{WHATSAPP_LINK}}
+      </div>
+    </section>
+
+    <section class="section" id="services" aria-labelledby="services-heading">
+      <h2 id="services-heading">Our services</h2>
+      <div class="cards">
+        {{SERVICES_HTML}}
+      </div>
+    </section>
+
+    <section class="section section-alt" id="about" aria-labelledby="about-heading">
+      <h2 id="about-heading">About {{BUSINESS_NAME}}</h2>
+      <p>{{DESCRIPTION}}</p>
+      <p>Opening hours: <strong>{{HOURS}}</strong></p>
+    </section>
+
+    <section class="section" id="contact" aria-labelledby="contact-heading">
+      <h2 id="contact-heading">Contact</h2>
+      <div class="contact-grid">
+        <div>
+          <ul class="contact-list">
+            <li>Phone: <a href="tel:{{PHONE_RAW}}">{{PHONE}}</a></li>
+            <li>Email: <a href="mailto:{{EMAIL}}">{{EMAIL}}</a></li>
+            <li>Address: {{ADDRESS}}</li>
+          </ul>
+        </div>
+        <form id="contact-form" novalidate>
+          <div class="field">
+            <label for="cf-name">Your name</label>
+            <input id="cf-name" name="name" type="text" required autocomplete="name" />
+          </div>
+          <div class="field">
+            <label for="cf-email">Your email</label>
+            <input id="cf-email" name="email" type="email" required autocomplete="email" />
+          </div>
+          <div class="field">
+            <label for="cf-message">Message</label>
+            <textarea id="cf-message" name="message" rows="4" required></textarea>
+          </div>
+          <p class="form-status" role="status" aria-live="polite"></p>
+          <button class="btn btn-primary" type="submit">Send message</button>
+          <p class="form-note">This demo form validates locally and opens your email app — no data is sent to a server.</p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; {{YEAR}} {{BUSINESS_NAME}}. All rights reserved.</p>
+    <p>Built with an original OMNIFORGE template — MIT licensed, see THIRD-PARTY-NOTICES.md</p>
+  </footer>
+
+  <script src="./main.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "business": {
+    "name": "Sample Business",
+    "tagline": "Quality you can trust, service you will remember.",
+    "description": "Sample Business is a local company delivering dependable products and friendly, professional service to its community.",
+    "type": "local business"
+  },
+  "services": [
+    { "name": "Consultation", "description": "Tell us what you need and we will recommend the right option for you." },
+    { "name": "Delivery", "description": "Fast, careful delivery to your home or office within the service area." },
+    { "name": "Support", "description": "After-sales support and honest advice, before and after you buy." }
+  ],
+  "contact": {
+    "phone": "+000 000 0000",
+    "email": "hello@example.com",
+    "address": "123 Main Street, Your Town",
+    "hours": "Mon-Sat 8:00-18:00",
+    "whatsapp": ""
+  },
+  "theme": {
+    "primary": "#0f766e",
+    "accent": "#f59e0b",
+    "bg": "#fafaf9",
+    "text": "#1c1917"
+  },
+  "seo": {
+    "title": "Sample Business — Home",
+    "description": "Sample Business: dependable products and friendly, professional local service."
+  }
+}

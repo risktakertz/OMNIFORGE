@@ -1,0 +1,12 @@
+{
+  "id": "local-bakery-f32b05",
+  "templateId": "template:static-business",
+  "name": "local bakery",
+  "params": {
+    "name": "Sample Business",
+    "locale": "en"
+  },
+  "createdAt": "2026-10-31T08:59:33.287Z",
+  "generator": "omniforge@0.1.0",
+  "isolation": "independent workspace; safe to export"
+}
