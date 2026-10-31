@@ -18,6 +18,7 @@ import { nowIso, newId } from "@omniforge/utils";
 import type { ExecutionPlan } from "@omniforge/task-planner";
 import { readyNodes } from "@omniforge/task-planner";
 import type { RunJournal } from "@omniforge/observability";
+import { resolveSandbox, runIsolated, scriptTrust } from "@omniforge/tool-gateway";
 
 export type TaskTerminalStatus = "passed" | "failed" | "blocked" | "skipped";
 
@@ -44,6 +45,41 @@ export interface DagContext {
   runId: string;
   /** shared scratch state for executors (workspace path, etc.) */
   env: Record<string, string>;
+  /** typed artifact handoffs (§5.5): taskId -> produced artifacts */
+  artifactLedger?: Map<string, DagArtifact>;
+}
+
+/** A typed handoff record: what a task produced for its downstream consumers. */
+export interface DagArtifact {
+  taskId: string;
+  kind: string;
+  path?: string;
+  schema?: string;
+  summary: string;
+  at: string;
+}
+
+/** Register a produced artifact so downstream tasks can consume typed inputs. */
+export function registerArtifact(ctx: DagContext, artifact: Omit<DagArtifact, "at">): DagArtifact {
+  if (!ctx.artifactLedger) ctx.artifactLedger = new Map();
+  const full: DagArtifact = { ...artifact, at: nowIso() };
+  ctx.artifactLedger.set(artifact.taskId, full);
+  return full;
+}
+
+/** Require upstream artifacts — a typed handoff failure, not an empty guess. */
+export function requireArtifacts(ctx: DagContext, taskIds: string[]): DagArtifact[] {
+  const out: DagArtifact[] = [];
+  const missing: string[] = [];
+  for (const id of taskIds) {
+    const a = ctx.artifactLedger?.get(id);
+    if (a) out.push(a);
+    else missing.push(id);
+  }
+  if (missing.length > 0) {
+    throw new OmniforgeError("E_HANDOFF_MISSING", `upstream artifact(s) missing: ${missing.join(", ")} — downstream task cannot evaluate its inputs`, { missing });
+  }
+  return out;
 }
 
 export type TaskExecutor = (node: TaskNode, ctx: DagContext) => Promise<Omit<TaskOutcome, "taskId" | "durationMs" | "attempts">>;
@@ -141,7 +177,12 @@ export async function executeDag(
           return;
         }
         if (t.status === "passed") {
-          // idempotent resume — never duplicate side effects
+          // idempotent resume — never duplicate side effects; the artifact
+          // ledger is rebuilt from the durable record so downstream typed
+          // handoffs keep working across processes
+          if (ctx.artifactLedger && !ctx.artifactLedger.has(node.id)) {
+            registerArtifact(ctx, { taskId: node.id, kind: "task-output", ...(t.artifacts[0] ? { path: t.artifacts[0] } : {}), summary: `resumed from durable state: ${t.message.slice(0, 120)}` });
+          }
           outcomes[node.id] = { taskId: node.id, status: "passed", message: `already passed (idempotent resume): ${t.message}`, artifacts: t.artifacts, evidence: [], durationMs: 0, attempts: t.attempts };
           return;
         }
@@ -158,6 +199,11 @@ export async function executeDag(
           state.tasks[node.id] = { ...state.tasks[node.id]!, attempts, status: res.status === "passed" ? "passed" : res.status === "failed" ? "failed" : res.status === "blocked" ? "blocked" : "skipped", message: res.message, artifacts: res.artifacts, updatedAt: nowIso() };
           persistDagState(ctx, state);
           outcomes[node.id] = { ...res, taskId: node.id, durationMs: Date.now() - started, attempts };
+          // durable typed handoff: every passed task's outputs are recorded so
+          // downstream consumers (and resumed processes) can require them
+          if (res.status === "passed" && ctx.artifactLedger && !ctx.artifactLedger.has(node.id)) {
+            registerArtifact(ctx, { taskId: node.id, kind: "task-output", ...(res.artifacts[0] ? { path: res.artifacts[0] } : {}), summary: res.message.slice(0, 160) });
+          }
           for (const ev of res.evidence) ctx.journal.addEvidence(ev);
           ctx.journal.append("dag", res.status === "passed" ? "info" : "warn", `task ${node.id} ${res.status}: ${res.message.slice(0, 160)}`);
         } catch (e) {
@@ -231,6 +277,69 @@ export function runGoverned(
     stdout: (r.stdout ?? "").slice(0, 200_000),
     stderr: (r.stderr ?? "").slice(0, 200_000),
     timedOut,
+  };
+}
+
+export interface WorkspaceScriptDecision {
+  executed: boolean;
+  isolated: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  trustReason: string;
+  blocked?: string;
+}
+
+/**
+ * Run a script that lives INSIDE a generated workspace under the §6 trust
+ * boundary. Trusted provenance (byte-identical to its versioned template or
+ * matching the compose-time provenance manifest) runs on the host allowlist;
+ * anything else is untrusted generated code: executed inside a real container
+ * when one exists, otherwise refused with a typed blocker. Never silently
+ * executes untrusted content on the host.
+ */
+export function runWorkspaceScript(opts: {
+  workspacePath: string;
+  scriptRelPath: string;
+  templateRoot?: string;
+  templateId?: string;
+  args?: string[];
+  timeoutMs?: number;
+}): WorkspaceScriptDecision {
+  const trust = scriptTrust({
+    workspacePath: opts.workspacePath,
+    scriptRelPath: opts.scriptRelPath,
+    ...(opts.templateRoot ? { templateRoot: opts.templateRoot } : {}),
+    ...(opts.templateId ? { templateId: opts.templateId } : {}),
+    // the compose-time provenance manifest lives in every generated workspace
+    provenancePath: join(opts.workspacePath, ".omniforge", "provenance.json"),
+  });
+  if (trust.trusted) {
+    const r = runGoverned("node", [opts.scriptRelPath, ...(opts.args ?? [])], opts.workspacePath, opts.timeoutMs ?? 60_000);
+    return { executed: true, isolated: false, trustReason: trust.reason, ...r };
+  }
+  // untrusted generated code: container or refusal — never the host
+  const sandbox = resolveSandbox();
+  if (sandbox.mode === "container" && sandbox.runtime) {
+    const r = runIsolated({
+      image: "node:22-bookworm-slim",
+      argv: ["node", opts.scriptRelPath, ...(opts.args ?? [])],
+      readOnlyMounts: [],
+      workdir: opts.workspacePath,
+      timeoutMs: opts.timeoutMs ?? 60_000,
+    });
+    return { executed: true, isolated: true, trustReason: trust.reason, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
+  }
+  return {
+    executed: false,
+    isolated: false,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    trustReason: trust.reason,
+    blocked: `E_SANDBOX_UNAVAILABLE: script ${opts.scriptRelPath} is not trusted provenance (${trust.reason}) and this host has no container runtime — untrusted code will not run unsandboxed`,
   };
 }
 

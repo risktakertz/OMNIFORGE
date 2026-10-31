@@ -54,3 +54,43 @@ points to where the evidence lives.
 Playwright headless chromium wiring; SQLite checkpointer adapter; Studio
 read-only UI over the run journal; OpenCode/OpenHands live smoke; Medusa
 commerce path (mock checkout stays the no-credential default).
+
+---
+
+## v0.2.0 — universal capability upgrade (2026-10-31)
+
+Directive: `OMNIFORGE_UNIVERSAL_SKILL_AUTONOMY_UPGRADE_MASTER_PROMPT.md`.
+Baseline audit: `docs/audits/2026-10-31-universal-upgrade-audit.md` (gap matrix
+with one retracted finding, recorded transparently). Test totals at release:
+**237 passed / 0 failed** (27 files), lint clean, typecheck+build 17/17.
+
+| Item | Proof |
+| --- | --- |
+| GoalSpec contract + deterministic/model-hybrid interpretation with policy-immutability | `packages/shared-types`, `packages/intent-engine/src/goal.ts`; `goal.test.ts` |
+| Capability operations metadata + operation-compatibility routing | SKILL.md `operations:`, `CapabilityRegistry.findByOperation`, `packages/skill-router` |
+| exceeds-scope typed blocker (no silent misroute of data-entity + access-control products) | `E_SCOPE_EXCEEDS_DETERMINISTIC` in router; U03/U16 acceptance tests |
+| Composable primitives with dependency/conflict constraints | `packages/blueprint-engine/src/primitives.ts`; tests |
+| Work blueprints for non-code deliverables (5 kinds, executable evidence criteria) | `packages/blueprint-engine/src/work.ts`; tests |
+| Composite goal decomposition | `decomposeComposite`; U04 test |
+| Prompt-injection scan for third-party skill content | `scanExternalInstructions`; hostile-SKILL.md adversarial test |
+| CodingBackend v3 (task id/scope/criteria/budget; features flags; prepare/cancel) | `packages/agent-runtime`; `v3.test.ts` |
+| Baseline-manifest change detection (no git required; untracked counts) | `snapshotManifest`/`diffManifests`; tests |
+| Typed execution routing (template → backend → NEEDS_MODEL/BACKEND_BLOCKED) | `selectExecutionRoute`; tests |
+| Container isolation provider + script provenance trust boundary | `runIsolated`, `scriptTrust`, `runWorkspaceScript`; isolation tests |
+| repo-push approval gating + path-normalized scoped approvals | `packages/tool-gateway`; security tests |
+| Generalized regression-safe modify (services/sections/text; rollback manifest; typed handoff) | `packages/orchestration/src/modify.ts`; CLI integration tests; U11 |
+| Evidence-driven seeded-failure repair | U12 acceptance test (real seeded failure → re-render fixer → re-verification) |
+| Authorized REA: analysis plan, denials, toy-fixture → spec → original impl → equivalence | `packages/research-engine/src/rea.ts`; `rea.test.ts`; U13 |
+| Typed DAG artifact handoffs + job-graph report | `registerArtifact`/`requireArtifacts`, `buildJobGraphReport`, `omniforge status`; unbound-operation adversarial test |
+| U01–U18 universal acceptance harness + adversarial additions | `tests/acceptance/universal.test.ts` (22 scenarios) |
+| Browser E2E required-mode flag + CI integration (cached chromium) | `tests/e2e/browser.e2e.mjs` (`OF_E2E_REQUIRED`), `.github/workflows/ci.yml` |
+
+## Explicitly NOT verified on this host (typed, reproducible prerequisites)
+
+| Item | Blocker | Reproduction path |
+| --- | --- | --- |
+| Live OpenCode backend execution (novel code by a real model) | no `opencode` binary, no model credentials | install opencode + authorize a model → `omniforge doctor` shows the smoke gate → opt-in live smoke test runs |
+| Containerized execution of untrusted workspace scripts | no docker/podman | install docker → `runWorkspaceScript` on a tampered script executes inside the container (argv recorded) |
+| Model-assisted interpretation of novel domains (live) | no provider credential | set `OPENAI_API_KEY` → interpreter hook activates automatically; policy fields stay deterministic |
+| Mobile/desktop/3D builds | no Android SDK / Rust / Godot toolchain | `omniforge doctor` names each absent toolchain; templates stay honestly `blocked` |
+| Real payments, deployment, repository pushes | `APPROVED_SPEND=0`; approval gates (incl. repo-push) | explicit scoped approval required per action+target+run |

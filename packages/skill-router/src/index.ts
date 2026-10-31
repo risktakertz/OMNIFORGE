@@ -10,6 +10,7 @@
 import { OmniforgeError, SkillSelection, type ProjectIntent, type SkillSelection as Selection, type Capability } from "@omniforge/shared-types";
 import { wordOverlap } from "@omniforge/utils";
 import type { CapabilityRegistry } from "@omniforge/capability-registry";
+import { exceedsDeterministicScope } from "@omniforge/intent-engine";
 
 export interface RouteOptions {
   /** Allow 'paid' cost capabilities (requires approval records). Default false. */
@@ -76,6 +77,19 @@ export interface RouteResult {
   missing: string[];
 }
 
+/**
+ * Deterministic scope keywords the built-in templates/generators genuinely
+ * cover. Requirements mentioning data entities + access control beyond these
+ * exceed deterministic scope and must NOT be silently routed to an unrelated
+ * template (§4.7) — they get a typed model-required blocker instead.
+ */
+const DETERMINISTIC_SCOPE_KEYWORDS = [
+  "commerce", "shop", "store", "cart", "booking", "appointment", "dashboard",
+  "metrics", "analytics", "game", "agent", "salon", "bakery", "restaurant",
+  "hotel", "portfolio", "landing", "blog", "reminder", "api", "endpoint",
+  "website", "mobile", "desktop", "3d", "phaser", "godot", "expo", "tauri",
+];
+
 export function routeIntent(
   intent: ProjectIntent,
   registry: CapabilityRegistry,
@@ -91,6 +105,22 @@ export function routeIntent(
       kinds: intent.productKinds,
       hints: intent.domainHints,
     });
+  }
+
+  // §4.7: never silently route a new product to an unrelated template. When
+  // requirements name data entities + access control beyond every built-in
+  // scope, the honest answer is a typed model-required blocker.
+  if (intent.operation === "create" || intent.operation === "modify") {
+    if (exceedsDeterministicScope([...intent.explicitRequirements, intent.request], DETERMINISTIC_SCOPE_KEYWORDS)) {
+      throw new OmniforgeError(
+        "E_SCOPE_EXCEEDS_DETERMINISTIC",
+        "requirements (data entities + access control) exceed every deterministic template scope — novel code generation via an authorized model backend is required",
+        {
+          kinds: intent.productKinds,
+          prerequisite: "configure an authorized model-backed coding backend (docs/MODEL_ROUTING.md), then re-run",
+        }
+      );
+    }
   }
 
   /* 1. template resolution (deterministic rules, first match wins) */
@@ -116,6 +146,10 @@ export function routeIntent(
   const wanted = packsFor(intent);
   const allSkills = registry.list().filter((c) => c.kind === "skill");
   const selected: Selection["selected"] = [];
+  // §4.4 operation-compatibility pass FIRST: capabilities that declare the
+  // requested operation are eligible; those without it are excluded with an
+  // explicit reason (never selected merely because a word appears in the prompt)
+  const operationEligible = new Set(registry.findByOperation(intent.operation).map((c) => c.id));
   for (const id of wanted) {
     const capId = id === "omniforge" ? "skill:omniforge" : `skill:${id}`;
     if (!registry.has(capId)) {
@@ -127,7 +161,11 @@ export function routeIntent(
       excluded.push({ capabilityId: capId, reason: "skill failed validation" });
       continue;
     }
-    selected.push({ capabilityId: capId, role: roleFor(id), reason: `mapped by policy for kinds=${intent.productKinds.join("+")}` });
+    if (!operationEligible.has(capId)) {
+      excluded.push({ capabilityId: capId, reason: `does not declare operation '${intent.operation}' (machine-readable operations metadata)` });
+      continue;
+    }
+    selected.push({ capabilityId: capId, role: roleFor(id), reason: `mapped by policy for kinds=${intent.productKinds.join("+")} (operation '${intent.operation}' declared)` });
   }
   for (const s of allSkills) {
     const capId = s.id;
@@ -135,7 +173,11 @@ export function routeIntent(
     const score = wordOverlap(intent.request, `${s.capabilities.join(" ")} ${s.requirements.join(" ")}`);
     excluded.push({
       capabilityId: capId,
-      reason: score > 0 ? `lower semantic rank (overlap=${score.toFixed(2)})` : "not mapped for this intent",
+      reason: !operationEligible.has(capId)
+        ? `does not declare operation '${intent.operation}'`
+        : score > 0
+          ? `lower semantic rank (overlap=${score.toFixed(2)})`
+          : "not mapped for this intent",
     });
   }
 
@@ -157,6 +199,7 @@ export function routeIntent(
     evidence: [
       `template rule: ${templateId} — ${rule.why}`,
       `packs mapped from kinds=${intent.productKinds.join("+")} operation=${intent.operation}`,
+      `operation-eligible capabilities (machine-readable metadata): ${[...operationEligible].length}`,
       `registry size: ${registry.list().length} capabilities`,
       ...(missing.length > 0 ? [`MISSING (typed gap, not simulated): ${missing.join(", ")}`] : []),
     ],

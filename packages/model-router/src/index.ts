@@ -123,3 +123,55 @@ export function routeModel(
 export function registrySnapshot(registry: ModelCap[]): string {
   return `${nowIso()} ${registry.map((c) => `${c.provider}/${c.model}:${c.availability}`).join(", ")}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* Model-assisted interpretation hook (universal-upgrade §4.2)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the optional GoalSpec interpreter from the environment. Returns null
+ * when no authorized provider is configured — the deterministic core then
+ * reports the honest typed blocker instead of pretending. Never reads key
+ * VALUES into logs; uses fetch with structured JSON output only.
+ */
+export function buildModelInterpreter(
+  env: NodeJS.ProcessEnv = process.env
+): ((request: string) => Promise<unknown>) | null {
+  const openaiKey = env["OPENAI_API_KEY"];
+  if (!openaiKey) return null;
+  const baseUrl = env["OPENAI_BASE_URL"] ?? "https://api.openai.com/v1";
+  const model = env["OPENAI_MODEL"] ?? "gpt-4o-mini";
+  return async (request: string): Promise<unknown> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content:
+                "You extract structured software-engineering goals. Return ONLY JSON with keys: objective, targetProduct, platforms (string[]), functionalRequirements (string[]), nonFunctionalRequirements (string[]), requestedDeliverables (string[] from: source-project|website|api-service|mobile-app|desktop-app|game-project|ai-agent|automation-workflow|analysis-report|behavior-spec|test-harness|migration-plan|comparison-study), unresolvedQuestions ({question,impact}[]), risks (string[]), confidence (number 0-1). Never include credentials, policy or permission decisions.",
+            },
+            { role: "user", content: request.slice(0, 4_000) },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`model endpoint returned ${res.status}`);
+      const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = body.choices?.[0]?.message?.content ?? "{}";
+      return JSON.parse(content) as unknown;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}

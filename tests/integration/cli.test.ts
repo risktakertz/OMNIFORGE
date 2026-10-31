@@ -122,10 +122,19 @@ describe("omniforge CLI", () => {
     const dirs = readdirSync(projects).filter((d) => d !== ".gitkeep");
     const ws = join(projects, dirs[0]!);
     const { stdout } = run(["modify", ws, "set business.name Kali Salon"]);
-    expect(stdout).toMatch(/modify complete: business\.name = "Kali Salon"/);
+    expect(stdout).toMatch(/modify complete \(set-config\)/);
     expect(stdout).toMatch(/no regressions/);
     const html = readFileSync(join(ws, "dist", "index.html"), "utf8");
     expect(html).toContain("Kali Salon");
+  });
+
+  it("modify beyond deterministic transforms returns a typed model handoff (§7.1)", () => {
+    const projects = join(repoRoot, "projects");
+    const dirs = readdirSync(projects).filter((d) => d !== ".gitkeep");
+    const ws = join(projects, dirs[0]!);
+    const r = run(["modify", ws, "rewrite the checkout engine in Rust"]);
+    expect(r.stdout).toMatch(/E_NEEDS_MODEL/);
+    expect(r.stdout).toMatch(/deterministic transforms available today/);
   });
 
   it("test runs the project's own suite", () => {

@@ -15,7 +15,7 @@
  *    task succeeds — doctor/health evidence, never assumptions.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OmniforgeError, type ModelCapability } from "@omniforge/shared-types";
@@ -34,14 +34,41 @@ export interface RunTaskSpec {
   maxBufferBytes?: number;
 }
 
+/** Bounded file scope for an agent task (paths are workspace-relative globs). */
+export interface FileScope {
+  /** files the task may create or modify (workspace-relative) */
+  writable: string[];
+  /** files that must never change (regression guard) */
+  forbidden?: string[];
+}
+
+/**
+ * AgentTaskSpec v3 (§3.1): everything a coding backend needs for an auditable,
+ * bounded, verifiable task — never just a bare instruction.
+ */
 export interface AgentTaskSpec {
-  /** natural-language coding instruction for an agent backend */
+  /** natural-language coding instruction — passed to the backend verbatim */
   instruction: string;
   cwd: string;
-  timeoutMs?: number;
+  /** unique task id for evidence, idempotency and ledger correlation */
+  taskId: string;
+  /** structured project context (manifest summary, stack, relevant docs) */
+  projectContext?: string;
+  /** bounded writable/forbidden file scope — validated against the diff */
+  fileScope?: FileScope;
+  /** original acceptance criteria the patch must satisfy */
+  acceptanceCriteria?: string[];
+  /** tools the backend may use (e.g. "npm", "git") — never implied */
+  allowedTools?: string[];
+  /** artifacts the task is expected to produce */
+  expectedArtifacts?: string[];
+  /** model preference (backend honors when it can, reports otherwise) */
   model?: string;
-  /** files the task is expected to touch (scope hint, not a sandbox) */
-  expectedFiles?: string[];
+  timeoutMs?: number;
+  /** hard wall-clock budget for the whole task incl. retries */
+  budgetMs?: number;
+  /** risk label drives gateway policy (high-risk tasks need approvals) */
+  risk?: "low" | "medium" | "high";
 }
 
 export interface BackendResult {
@@ -57,6 +84,8 @@ export interface AgentTaskResult {
   status: "passed" | "failed" | "unsupported" | "blocked";
   detail: string;
   changedFiles: string[];
+  /** files changed OUTSIDE the declared writable scope — hard contract violation */
+  scopeViolations: string[];
   raw: BackendResult | null;
 }
 
@@ -65,17 +94,38 @@ export interface BackendHealth {
   detail: string;
 }
 
+/**
+ * Capability flags (§3.1): backends declare what they ACTUALLY support.
+ * Callers must consult these instead of assuming a uniform interface.
+ */
+export interface BackendFeatureFlags {
+  prepare: boolean;
+  streamEvents: boolean;
+  cancel: boolean;
+  collectDiff: boolean;
+  collectEvidence: boolean;
+  modelBacked: boolean;
+}
+
 export interface CodingBackend {
   readonly id: string;
   readonly available: boolean;
   readonly availabilityNote: string;
   /** model/executor capabilities this backend exposes (may be empty) */
   capabilities(): ModelCapability[];
+  /** §3.1 feature flags — the truthful interface contract */
+  features(): BackendFeatureFlags;
   health(): Promise<BackendHealth>;
   /** low-level governed command execution (allowlisted, argv-based) */
   runTask(spec: RunTaskSpec): Promise<BackendResult>;
+  /** §3.1: idempotent pre-flight (workspace manifest, env sanity) — optional */
+  prepare?(spec: AgentTaskSpec): Promise<{ manifest: Record<string, string>; ok: boolean; note: string }>;
   /** agent-level novel coding task — the real autonomy boundary */
   executeTask?(spec: AgentTaskSpec): Promise<AgentTaskResult>;
+  /** §3.1: event stream where supported — backends that cannot stream say so */
+  streamEvents?(spec: AgentTaskSpec): AsyncGenerator<{ type: string; data: string }>;
+  /** §3.1: cooperative cancellation where supported */
+  cancel?(taskId: string): Promise<boolean>;
   /** git diff summary of the workspace (args-array git, redacted) */
   collectDiff?(workspacePath: string): Promise<{ stat: string; files: string[] }>;
   /** evidence records for the last executed task */
@@ -98,6 +148,87 @@ export function probeBinary(name: string): string | null {
   if (r.status !== 0) return null;
   const first = String(r.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).find(Boolean);
   return first && existsSync(first) ? first : first || null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Baseline-manifest change detection (§3.3)                            */
+/* ------------------------------------------------------------------ */
+
+import { createHash } from "node:crypto";
+
+const MANIFEST_SKIP = new Set(["node_modules", ".git", "dist-export"]);
+
+/** Hash every file under a workspace (recursive, bounded depth). No .git required. */
+export function snapshotManifest(root: string, maxFiles = 5_000): Record<string, string> {
+  const manifest: Record<string, string> = {};
+  const walk = (dir: string, base: string, depth: number): void => {
+    if (depth > 8 || Object.keys(manifest).length >= maxFiles) return;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (MANIFEST_SKIP.has(e)) continue;
+      const full = join(dir, e);
+      const rel = base ? `${base}/${e}` : e;
+      let st;
+      try {
+        st = statSync(full, { throwIfNoEntry: false });
+      } catch {
+        continue;
+      }
+      if (!st) continue;
+      if (st.isDirectory()) walk(full, rel, depth + 1);
+      else if (st.isFile()) {
+        try {
+          manifest[rel] = createHash("sha256").update(readFileSync(full)).digest("hex");
+        } catch {
+          manifest[rel] = "unreadable";
+        }
+      }
+    }
+  };
+  walk(root, "", 0);
+  return manifest;
+}
+
+/** Diff two manifests: changed + added + removed, all counted (§3.3: untracked counts). */
+export function diffManifests(
+  before: Record<string, string>,
+  after: Record<string, string>
+): { changed: string[]; added: string[]; removed: string[] } {
+  const changed: string[] = [];
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (const [f, h] of Object.entries(after)) {
+    if (!(f in before)) added.push(f);
+    else if (before[f] !== h) changed.push(f);
+  }
+  for (const f of Object.keys(before)) if (!(f in after)) removed.push(f);
+  return { changed, added, removed };
+}
+
+/** Validate a diff against the declared bounded file scope (§3.1/§3.6). */
+export function scopeViolationsOf(
+  diff: { changed: string[]; added: string[]; removed: string[] },
+  scope: FileScope | undefined
+): string[] {
+  if (!scope) return [];
+  const touched = [...diff.changed, ...diff.added, ...diff.removed];
+  const violations: string[] = [];
+  for (const f of touched) {
+    const inScope = scope.writable.some((w) => f === w || f.startsWith(w.endsWith("/") ? w : `${w}/`));
+    if (!inScope) violations.push(f);
+  }
+  for (const f of scope.forbidden ?? []) {
+    // prefix-aware: touching anything UNDER a forbidden path is a violation
+    if (touched.some((t) => t === f || t.startsWith(f.endsWith("/") ? f : `${f}/`))) {
+      violations.push(`${f} (forbidden path touched)`);
+    }
+  }
+  return violations;
 }
 
 /* ------------------------------------------------------------------ */
@@ -142,6 +273,26 @@ export class LocalNodeBackend implements CodingBackend {
         notes: "deterministic shell/file execution inside gateway-approved workspaces; cannot author novel code",
       },
     ];
+  }
+
+  features(): BackendFeatureFlags {
+    return {
+      prepare: true,
+      streamEvents: false,
+      cancel: false,
+      collectDiff: true,
+      collectEvidence: false,
+      modelBacked: false,
+    };
+  }
+
+  /** §3.1 pre-flight: capture the workspace baseline manifest. */
+  async prepare(spec: AgentTaskSpec): Promise<{ manifest: Record<string, string>; ok: boolean; note: string }> {
+    return {
+      manifest: snapshotManifest(spec.cwd),
+      ok: true,
+      note: "baseline manifest captured (no git repo required)",
+    };
   }
 
   async health(): Promise<BackendHealth> {
@@ -227,6 +378,7 @@ export class LocalNodeBackend implements CodingBackend {
       detail:
         "local-node is a deterministic executor, not a coding agent — novel code generation requires a model-backed backend (e.g. opencode). Configure one to enable autonomous generation.",
       changedFiles: [],
+      scopeViolations: [],
       raw: null,
     };
   }
@@ -259,6 +411,8 @@ export class OpenCodeBackend implements CodingBackend {
   /** set to true after a live smoke task succeeds (never assumed) */
   private smokeVerified = false;
   private lastResult: BackendResult | null = null;
+  /** running child processes by taskId — cooperative cancellation (§3.1) */
+  private readonly running = new Map<string, ReturnType<typeof spawn>>();
 
   constructor(
     private readonly gateway: ToolGateway,
@@ -285,6 +439,36 @@ export class OpenCodeBackend implements CodingBackend {
           : "CLI present but not yet smoke-tested on this host; doctor runs the live probe",
       },
     ];
+  }
+
+  features(): BackendFeatureFlags {
+    return {
+      prepare: true,
+      streamEvents: false, // opencode run is non-interactive; no stable event stream contract
+      cancel: true,
+      collectDiff: true,
+      collectEvidence: true,
+      modelBacked: true,
+    };
+  }
+
+  /** §3.1 pre-flight: baseline manifest WITHOUT requiring a git repo. */
+  async prepare(spec: AgentTaskSpec): Promise<{ manifest: Record<string, string>; ok: boolean; note: string }> {
+    if (!this.available) return { manifest: {}, ok: false, note: this.availabilityNote };
+    return {
+      manifest: snapshotManifest(spec.cwd),
+      ok: true,
+      note: `baseline manifest captured (${Object.keys(snapshotManifest(spec.cwd)).length} files; git not required)`,
+    };
+  }
+
+  /** §3.1 cooperative cancellation of a running task. */
+  async cancel(taskId: string): Promise<boolean> {
+    const child = this.running.get(taskId);
+    if (!child) return false;
+    child.kill("SIGTERM");
+    setTimeout(() => child.kill("SIGKILL"), 3_000);
+    return true;
   }
 
   async health(): Promise<BackendHealth> {
@@ -351,47 +535,107 @@ export class OpenCodeBackend implements CodingBackend {
     });
   }
 
-  /** Real agent execution via `opencode run "<instruction>"` (non-interactive). */
+  /**
+   * Real agent execution via `opencode run "<instruction>"` (non-interactive):
+   *  - the FULL instruction text travels as ONE structured argv element (§3.2:
+   *    never whitespace-split, never routed through a shell);
+   *  - async spawn with cooperative cancel + wall-clock timeout;
+   *  - change detection by baseline manifest hash — a git repo is NOT
+   *    required and untracked/new files always count (§3.3);
+   *  - the declared bounded file scope is enforced against the observed diff
+   *    (§3.6: agent output is untrusted until verified).
+   */
   async executeTask(spec: AgentTaskSpec): Promise<AgentTaskResult> {
     if (!this.available) {
       return {
         status: "unsupported",
         detail: this.availabilityNote,
         changedFiles: [],
+        scopeViolations: [],
         raw: null,
       };
     }
     this.gateway.authorize("run", { target: spec.cwd, command: redactSecrets(`opencode run ${spec.instruction.slice(0, 80)}`) });
-    const before = this.available ? await this.collectDiff(spec.cwd) : { stat: "", files: [] };
+    const before = snapshotManifest(spec.cwd);
     const args = ["run"];
     if (spec.model) args.push("--model", spec.model);
     args.push(spec.instruction);
     const started = Date.now();
-    const r = spawnSync(this.cliPath!, args, {
-      cwd: spec.cwd,
-      encoding: "utf8",
-      timeout: spec.timeoutMs ?? 300_000,
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 8 * 1024 * 1024,
+    const timeoutMs = spec.timeoutMs ?? 300_000;
+    const raw = await new Promise<BackendResult>((resolveP) => {
+      const child = spawn(this.cliPath!, args, {
+        cwd: spec.cwd,
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      this.running.set(spec.taskId, child);
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, timeoutMs);
+      child.stdout?.on("data", (d: Buffer) => {
+        if (stdout.length < 400_000) stdout += d.toString();
+      });
+      child.stderr?.on("data", (d: Buffer) => {
+        if (stderr.length < 200_000) stderr += d.toString();
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        this.running.delete(spec.taskId);
+        resolveP({
+          exitCode: code,
+          stdout: redactSecrets(stdout.slice(0, 400_000)),
+          stderr: redactSecrets(stderr.slice(0, 200_000)),
+          durationMs: Date.now() - started,
+          timedOut,
+          signal: signal ?? null,
+        });
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        this.running.delete(spec.taskId);
+        resolveP({
+          exitCode: -1,
+          stdout: "",
+          stderr: redactSecrets(err.message),
+          durationMs: Date.now() - started,
+          timedOut: false,
+          signal: null,
+        });
+      });
     });
-    const raw: BackendResult = {
-      exitCode: r.status,
-      stdout: redactSecrets(String(r.stdout ?? "").slice(0, 200_000)),
-      stderr: redactSecrets(String(r.stderr ?? "").slice(0, 100_000)),
-      durationMs: Date.now() - started,
-      timedOut: Boolean(r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT"),
-      signal: null,
-    };
     this.lastResult = raw;
-    const after = await this.collectDiff(spec.cwd);
-    const changedFiles = after.files.filter((f) => !before.files.includes(f));
+    const after = snapshotManifest(spec.cwd);
+    const diff = diffManifests(before, after);
+    const changedFiles = [...diff.changed, ...diff.added, ...diff.removed];
+    const violations = scopeViolationsOf(diff, spec.fileScope);
     if (raw.exitCode !== 0) {
-      return { status: raw.timedOut ? "blocked" : "failed", detail: `opencode run failed (exit ${raw.exitCode}): ${raw.stderr.slice(0, 200)}`, changedFiles, raw };
+      return {
+        status: raw.timedOut ? "blocked" : "failed",
+        detail: `opencode run failed (exit ${raw.exitCode}): ${raw.stderr.slice(0, 200)}`,
+        changedFiles,
+        scopeViolations: violations,
+        raw,
+      };
+    }
+    if (violations.length > 0) {
+      // §3.6: treat agent output as untrusted — scope violations fail the task
+      return {
+        status: "failed",
+        detail: `scope contract violated: changed files outside declared writable scope: ${violations.slice(0, 8).join(", ")}`,
+        changedFiles,
+        scopeViolations: violations,
+        raw,
+      };
     }
     return {
       status: "passed",
       detail: raw.stdout.slice(0, 400) || "opencode task completed",
       changedFiles,
+      scopeViolations: [],
       raw,
     };
   }
@@ -424,7 +668,7 @@ export class OpenCodeBackend implements CodingBackend {
    */
   async smoke(workspacePath?: string): Promise<AgentTaskResult> {
     if (!this.available) {
-      return { status: "unsupported", detail: this.availabilityNote, changedFiles: [], raw: null };
+      return { status: "unsupported", detail: this.availabilityNote, changedFiles: [], scopeViolations: [], raw: null };
     }
     const ws = workspacePath ?? mkdtempSync(join(tmpdir(), "of-opencode-smoke-"));
     const owned = !workspacePath;
@@ -437,13 +681,21 @@ export class OpenCodeBackend implements CodingBackend {
       );
       writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "smoke", type: "module", scripts: { test: "node --test math.test.mjs" } }, null, 2), "utf8");
       const res = await this.executeTask({
+        taskId: "smoke-seeded-bug",
         instruction:
           "The file math.js has a bug: add() subtracts instead of adding. Fix add() so the test passes, then run `npm test` and confirm it exits 0. Change nothing else.",
         cwd: ws,
         timeoutMs: 240_000,
+        fileScope: { writable: ["math.js"], forbidden: ["math.test.mjs", "package.json"] },
+        acceptanceCriteria: ["node --test math.test.mjs exits 0", "add(2,3) === 5"],
+        allowedTools: ["npm"],
+        expectedArtifacts: ["math.js"],
+        risk: "low",
       });
       const verify = spawnSync("node", ["--test", "math.test.mjs"], { cwd: ws, encoding: "utf8", timeout: 30_000 });
-      const verified = verify.status === 0 && res.changedFiles.includes("math.js");
+      const verified = verify.status === 0 && res.changedFiles.includes("math.js") && res.scopeViolations.length === 0;
+      // a real observed smoke pass is the ONLY path to 'verified' (never assumed)
+      if (verified) this.smokeVerified = true;
       return {
         ...res,
         status: verified ? "passed" : "failed",
@@ -460,8 +712,69 @@ export class OpenCodeBackend implements CodingBackend {
 }
 
 /* ------------------------------------------------------------------ */
-/* Backend selection                                                   */
+/* Capability-aware execution routing (§3.5)                            */
 /* ------------------------------------------------------------------ */
+
+/** What the caller needs from the implementation layer for this requirement. */
+export interface RequirementProfile {
+  /** a deterministic template fully covers this requirement? */
+  templateSufficient: boolean;
+  /** templateId when templateSufficient (for reuse, never re-routing) */
+  templateId?: string;
+  /** does the requirement need novel source code a template cannot produce? */
+  requiresNovelCode: boolean;
+  /** human-readable reason recorded in evidence */
+  reason: string;
+}
+
+export type ExecutionRouteDecision =
+  | { route: "template"; templateId: string; backend: CodingBackend | null; reason: string }
+  | { route: "backend"; backend: CodingBackend; reason: string }
+  | { route: "needs-model"; code: "E_NEEDS_MODEL"; reason: string; prerequisite: string }
+  | { route: "backend-blocked"; code: "E_BACKEND_BLOCKED"; reason: string; prerequisite: string };
+
+/**
+ * §3.5 capability-aware selection, as a pure typed decision:
+ *  - a deterministic template that fully meets the requirement is REUSED;
+ *  - requirements beyond it are handed to an available model-backed backend;
+ *  - no backend/model available ⇒ typed NEEDS_MODEL / BACKEND_BLOCKED with
+ *    setup instructions — never a generic website or an invented success.
+ */
+export function selectExecutionRoute(
+  profile: RequirementProfile,
+  backend: CodingBackend | null
+): ExecutionRouteDecision {
+  if (profile.templateSufficient && profile.templateId) {
+    return { route: "template", templateId: profile.templateId, backend: null, reason: profile.reason };
+  }
+  if (!profile.requiresNovelCode) {
+    // nothing novel needed but no template either — deterministic planning only
+    return {
+      route: "needs-model",
+      code: "E_NEEDS_MODEL",
+      reason: `requirement matches no deterministic capability: ${profile.reason}`,
+      prerequisite: "configure an authorized model-backed coding backend (docs/MODEL_ROUTING.md) or use a supported template",
+    };
+  }
+  if (!backend) {
+    return {
+      route: "needs-model",
+      code: "E_NEEDS_MODEL",
+      reason: `novel implementation required (${profile.reason}) but no coding backend is configured`,
+      prerequisite: "install a supported coding backend (e.g. opencode) and authorize a model",
+    };
+  }
+  const flags = backend.features();
+  if (!flags.modelBacked || !backend.available) {
+    return {
+      route: "backend-blocked",
+      code: "E_BACKEND_BLOCKED",
+      reason: `backend '${backend.id}' cannot execute novel coding tasks: ${backend.availabilityNote}`,
+      prerequisite: backend.available ? "authorize a model for this backend" : "install the backend binary and authorize a model",
+    };
+  }
+  return { route: "backend", backend, reason: profile.reason };
+}
 
 /** Detect the best coding backend honestly: opencode if present, else local. */
 export function detectCodingBackend(gateway: ToolGateway): CodingBackend {

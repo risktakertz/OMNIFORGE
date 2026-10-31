@@ -5,9 +5,10 @@
  * APPROVED_SPEND (default 0) requires approval; destructive operations require
  * approval. Every decision is auditable.
  */
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve, isAbsolute, sep } from "node:path";
+import { resolve, isAbsolute, join, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { OmniforgeError, ToolInvocation, type ToolInvocation as Invocation } from "@omniforge/shared-types";
 import { newId, nowIso, redactSecrets } from "@omniforge/utils";
 
@@ -31,7 +32,9 @@ export const ACTION_RISK: Record<ActionClass, { risk: "low" | "medium" | "high";
   "dependency-install": { risk: "medium", needsApproval: false },
   "execute-code": { risk: "medium", needsApproval: false },
   "network-fetch": { risk: "low", needsApproval: false },
-  "repo-push": { risk: "medium", needsApproval: false },
+  // universal-upgrade §6.5: pushes to remote repositories are externally
+  // visible actions and require an explicit, scope-specific approval
+  "repo-push": { risk: "high", needsApproval: true },
   "third-party-login": { risk: "high", needsApproval: true },
   "production-modify": { risk: "high", needsApproval: true },
   "public-post": { risk: "high", needsApproval: true },
@@ -107,6 +110,147 @@ export function resolveSandbox(probe: (bin: string, args: string[]) => { status:
 function defaultProbe(bin: string, args: string[]): { status: number | null } {
   const r = spawnSync(bin, args, { encoding: "utf8", timeout: 5_000, stdio: "ignore" });
   return { status: r.status };
+}
+
+/* ------------------------------------------------------------------ */
+/* Container isolation provider (universal-upgrade §6.3)              */
+/* ------------------------------------------------------------------ */
+
+export interface IsolatedExecSpec {
+  image: string;
+  argv: string[];
+  /** absolute host paths mounted read-only into the container */
+  readOnlyMounts: string[];
+  /** absolute host path mounted read-write (the bounded workspace) */
+  workdir: string;
+  /** workdir path INSIDE the container (default /workspace) */
+  containerWorkdir?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+  /** network policy: containers default to NO network (§6.3 egress) */
+  allowNetwork?: boolean;
+}
+
+export interface IsolatedExecResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+  /** the exact container runtime used — proof the job ran isolated */
+  runtime: string;
+  containerRef: string;
+}
+
+/**
+ * Execute untrusted code in a REAL container (docker/podman). This is not a
+ * probe: the job actually launches inside the runtime, with bounded mounts,
+ * no network by default, a non-root identity and a hard timeout. When no
+ * runtime exists the typed E_SANDBOX_UNAVAILABLE is thrown — untrusted code
+ * never falls back to host execution (§6.2/6.3).
+ */
+export function runIsolated(spec: IsolatedExecSpec, probe: (bin: string, args: string[]) => { status: number | null } = defaultProbe): IsolatedExecResult {
+  const sandbox = resolveSandbox(probe);
+  if (sandbox.mode !== "container" || !sandbox.runtime) {
+    throw new OmniforgeError(
+      "E_SANDBOX_UNAVAILABLE",
+      `isolated execution requires a container runtime (docker/podman); this host reports: ${sandbox.detail}`,
+      { image: spec.image }
+    );
+  }
+  const runtime = sandbox.runtime;
+  const innerWorkdir = spec.containerWorkdir ?? "/workspace";
+  const argv = [
+    runtime,
+    "run",
+    "--rm",
+    "--network", spec.allowNetwork ? "bridge" : "none",
+    "--user", "nobody",
+    "--cpus", "1",
+    "--memory", "512m",
+    "--pids-limit", "64",
+    "--read-only",
+    "-v", `${resolve(spec.workdir)}:${innerWorkdir}`,
+    ...spec.readOnlyMounts.flatMap((m, i) => ["-v", `${resolve(m)}:/mnt/ro-${i}:ro`]),
+    "-w", innerWorkdir,
+    ...Object.entries(spec.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
+    spec.image,
+    ...spec.argv,
+  ];
+  const started = Date.now();
+  const timeoutMs = spec.timeoutMs ?? 120_000;
+  const max = spec.maxBufferBytes ?? 512 * 1024;
+  const r = spawnSync(argv[0]!, argv.slice(1), {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const timedOut = Boolean(r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT");
+  return {
+    exitCode: r.status,
+    stdout: redactSecrets(String(r.stdout ?? "").slice(0, max)),
+    stderr: redactSecrets(String(r.stderr ?? "").slice(0, max)),
+    durationMs: Date.now() - started,
+    timedOut,
+    runtime,
+    containerRef: `${spec.image}@${newId("ct")}`,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Script provenance trust boundary (§6.1/6.2)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Decide whether a workspace script is trusted repository-owned content.
+ * A script is trusted ONLY when its bytes are identical to the versioned
+ * template it was scaffolded from (provenance by hash, not by assumption).
+ * Anything the agent, a model, or a third party wrote is untrusted and must
+ * not run on the host without a container (§6.2: an allowlisted interpreter
+ * executing arbitrary content is NOT a sandbox).
+ */
+export function scriptTrust(opts: {
+  workspacePath: string;
+  scriptRelPath: string;
+  templateRoot?: string;
+  templateId?: string;
+  /** explicit trust declarations (repo-owned tests, gateway-invoked skills) */
+  trustedPaths?: string[];
+  /** compose-time provenance manifest (.omniforge/provenance.json) to check */
+  provenancePath?: string;
+}): { trusted: boolean; reason: string; hash: string } {
+  const hashOf = (p: string): string => {
+    try {
+      return createHash("sha256").update(readFileSync(p)).digest("hex");
+    } catch {
+      return "absent";
+    }
+  };
+  const abs = join(resolve(opts.workspacePath), opts.scriptRelPath);
+  const hash = hashOf(abs);
+  if (hash === "absent") return { trusted: false, reason: "script missing", hash };
+  if ((opts.trustedPaths ?? []).some((t) => abs === resolve(t) || abs.startsWith(resolve(t) + sep))) {
+    return { trusted: true, reason: "explicitly trusted path (repo-owned)", hash };
+  }
+  if (opts.templateRoot && opts.templateId) {
+    const candidate = join(resolve(opts.templateRoot), opts.templateId.replace(/^template:/, ""), opts.scriptRelPath);
+    if (hashOf(candidate) === hash) {
+      return { trusted: true, reason: `byte-identical to versioned template ${opts.templateId}`, hash };
+    }
+  }
+  if (opts.provenancePath && existsSync(opts.provenancePath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(opts.provenancePath, "utf8")) as { files?: Record<string, string> };
+      if (manifest.files?.[opts.scriptRelPath] === hash) {
+        return { trusted: true, reason: "matches compose-time provenance manifest", hash };
+      }
+    } catch {
+      /* corrupt manifest → not trusted */
+    }
+  }
+  return { trusted: false, reason: "no provenance match — treat as untrusted generated code (container required)", hash };
 }
 
 /** Binaries that may execute on the host under the allowlist policy. */
@@ -253,7 +397,13 @@ export class ToolGateway {
       if (rec.action !== tool) continue;
       if (rec.targets && rec.targets.length > 0) {
         if (!target) continue;
-        const covered = rec.targets.some((t) => target === t || target.startsWith(t.endsWith(sep) ? t : t + sep));
+        // normalize BOTH sides before prefix comparison — a raw string like
+        // "<root>/../elsewhere" must never satisfy a scoped approval
+        const abs = resolve(target);
+        const covered = rec.targets.some((t) => {
+          const absT = resolve(t);
+          return abs === absT || abs.startsWith(absT.endsWith(sep) ? absT : absT + sep);
+        });
         if (!covered) continue;
       }
       return true;

@@ -44,12 +44,23 @@ describe("adversarial defenses", () => {
     expect(() => gw.authorize("rm-rf", { target: resolve(repoRoot, "..") })).toThrow(/E_GATEWAY/);
   });
 
-  it("repo push is a distinct policy class, never smuggled as a read", () => {
+  it("repo push is approval-gated and scope-specific (§6.5), never blanket-allowed", () => {
     const gw = new ToolGateway(defaultContext([repoRoot]));
     const d = gw.authorize("git-push");
     expect(d.actionClass).toBe("repo-push");
     expect(d.actionClass).not.toBe("read-inspect");
-    expect(d.decision).toBe("allow"); // pushing to the USER'S designated repo is authorized this session
+    // no approval on record: the push is NOT authorized (universal-upgrade §6.5)
+    expect(d.decision).toBe("approval-required");
+    // a blanket legacy id grants nothing
+    gw.recordApproval("apr_legacy_blanket");
+    expect(gw.authorize("git-push").decision).toBe("approval-required");
+    // a scoped approval for THIS action + THIS target unlocks exactly that
+    gw.recordApproval({ id: "apr_push_1", action: "git-push", targets: [repoRoot], decidedAt: new Date().toISOString() });
+    const d2 = gw.authorize("git-push", { target: repoRoot });
+    expect(d2.decision).toBe("allow");
+    // an unrelated target is still gated
+    const d3 = gw.authorize("git-push", { target: `${repoRoot}/../elsewhere` });
+    expect(d3.decision).toBe("approval-required");
   });
 
   it("expired/absent model tokens yield typed gaps, not degraded results", () => {

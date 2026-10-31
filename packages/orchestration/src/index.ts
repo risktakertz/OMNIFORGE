@@ -39,6 +39,7 @@ import {
   type SkillSelection,
   type ValidationResult,
   type TaskNode,
+  type GoalSpec,
 } from "@omniforge/shared-types";
 import { OmniforgeError } from "@omniforge/shared-types";
 import type { ExecutionPlan } from "@omniforge/task-planner";
@@ -46,6 +47,7 @@ import { planExecution, topoSort } from "@omniforge/task-planner";
 import { newId, nowIso } from "@omniforge/utils";
 import { RunJournal, createLogger } from "@omniforge/observability";
 import { parseRequest } from "@omniforge/intent-engine";
+import { buildGoalSpec, decomposeComposite, mergeModelGoalSpec } from "@omniforge/intent-engine";
 import { buildBlueprint } from "@omniforge/blueprint-engine";
 import { StaticKnowledgeProvider } from "@omniforge/research-engine";
 import { CapabilityRegistry } from "@omniforge/capability-registry";
@@ -55,12 +57,22 @@ import {
   createWorkspace,
   exportWorkspace,
   readWorkspaceConfig,
+  recordProvenance,
   releaseLease,
   saveBlueprint,
 } from "@omniforge/workspace-manager";
 import { verifyWorkspace } from "@omniforge/verification";
 import { LocalNodeBackend, detectCodingBackend } from "@omniforge/agent-runtime";
-import { executeDag, resetFailedTasks, runGoverned, type DagContext, type TaskExecutor } from "./dag.js";
+import {
+  executeDag,
+  loadDagState,
+  registerArtifact,
+  requireArtifacts,
+  resetFailedTasks,
+  runWorkspaceScript,
+  type DagContext,
+  type TaskExecutor,
+} from "./dag.js";
 import { executeRepair, signatureOf } from "./repair.js";
 import { composeAgentMvp } from "./agent-mvp.js";
 import { invokeSkill } from "./skills.js";
@@ -73,6 +85,7 @@ const OFState = Annotation.Root({
   request: Annotation<string>,
   runId: Annotation<string>,
   intent: Annotation<ProjectIntent | null>,
+  goalSpec: Annotation<GoalSpec | null>,
   researchNoteCount: Annotation<number>,
   blueprint: Annotation<ProductBlueprint | null>,
   selection: Annotation<SkillSelection | null>,
@@ -89,6 +102,15 @@ const OFState = Annotation.Root({
 });
 export type OFState = typeof OFState.State;
 
+/**
+ * Optional model-assisted interpreter hook (§4.2): when the operator has
+ * authorized a model, the CLI wires it here; the deterministic core never
+ * requires it. The hook receives the raw request and returns structured
+ * goal fields — POLICY fields are merged only from the deterministic side
+ * (mergeModelGoalSpec enforces this).
+ */
+export type ModelInterpreter = (request: string) => Promise<unknown>;
+
 export interface ServiceConfig {
   repoRoot: string;
   runsRoot: string;
@@ -97,6 +119,8 @@ export interface ServiceConfig {
   failOnceAt?: string;
   skipExport?: boolean;
   logger?: ReturnType<typeof createLogger>;
+  /** authorized model-assisted interpretation (absent ⇒ honest NEEDS_MODEL) */
+  modelInterpreter?: ModelInterpreter;
 }
 
 /* ------------------------------------------------------------------ */
@@ -248,7 +272,7 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
 /* Graph construction                                                  */
 /* ------------------------------------------------------------------ */
 
-const GRAPH_PHASE_TASKS = ["t:intake", "t:permission-check", "t:interpret", "t:research", "t:specify", "t:select", "t:plan"];
+const GRAPH_PHASE_TASKS = ["t:intake", "t:permission-check", "t:interpret", "t:research", "t:specify", "t:select", "t:plan", "t:prepare-workspace"];
 
 export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | FileCheckpointSaver) {
   const journalOf = (state: OFState): RunJournal => new RunJournal(config.runsRoot, state.runId || "pending-run");
@@ -274,19 +298,46 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       journal.append("permission-check", "info", `policy: FREE_FIRST_MODE=${freeFirst} APPROVED_SPEND=${spend}`);
       return {};
     })
-    .addNode("interpret", (state: OFState) => {
+    .addNode("interpret", async (state: OFState) => {
       const intent = parseRequest(state.request);
-      journalOf(state).append("interpret", "info", `intent parsed: ${intent.operation}/${intent.productKinds.join("+")}/${intent.locale} novelty=${intent.novelty}`);
+      const journal = journalOf(state);
+      journal.append("interpret", "info", `intent parsed: ${intent.operation}/${intent.productKinds.join("+")}/${intent.locale} novelty=${intent.novelty}`);
+      // universal GoalSpec (§4.1) — the extensible contract the rest of the
+      // pipeline reads; deterministic mapping keeps every field traceable
+      let goalSpec = buildGoalSpec(intent);
       if (intent.novelty === "novel") {
-        // honest typed outcome: a novel request must NOT silently become a
-        // known template — it needs model-assisted interpretation
-        throw new OmniforgeError("E_INTENT_NOVEL", "request matches no known product capability — needs model-assisted interpretation (NEEDS_MODEL)", {
-          request: state.request.slice(0, 200),
-          hints: intent.domainHints,
-          prerequisite: "configure an authorized model provider (see docs/MODEL_ROUTING.md), then re-run",
-        });
+        if (config.modelInterpreter) {
+          // §4.2: model-assisted structured extraction for unfamiliar domains.
+          // Policy fields are NEVER taken from model output (merge enforces).
+          try {
+            const modelFields = await config.modelInterpreter(state.request);
+            goalSpec = mergeModelGoalSpec(goalSpec, modelFields);
+            journal.append("interpret", "info", `model-assisted interpretation applied (hybrid, confidence=${goalSpec.confidence.toFixed(2)})`);
+          } catch (e) {
+            journal.append("interpret", "warn", `model interpretation failed: ${(e as Error).message.slice(0, 140)} — typed blocker stands`);
+            throw new OmniforgeError("E_INTENT_NOVEL", `model-assisted interpretation failed: ${(e as Error).message.slice(0, 140)}`, {
+              request: state.request.slice(0, 200),
+              hints: intent.domainHints,
+              prerequisite: "verify the model interpreter is reachable and schema-compliant, then re-run",
+            });
+          }
+        } else {
+          // honest typed outcome: a novel request must NOT silently become a
+          // known template — it needs model-assisted interpretation
+          throw new OmniforgeError("E_INTENT_NOVEL", "request matches no known product capability — needs model-assisted interpretation (NEEDS_MODEL)", {
+            request: state.request.slice(0, 200),
+            hints: intent.domainHints,
+            prerequisite: "configure an authorized model provider (see docs/MODEL_ROUTING.md), then re-run",
+          });
+        }
       }
-      return { intent };
+      // §4.8 composite decomposition: multi-deliverable goals are split into
+      // per-deliverable sub-goals, recorded for planning — never collapsed
+      const parts = decomposeComposite(goalSpec);
+      if (parts) {
+        journal.append("interpret", "info", `composite goal decomposed into ${parts.length} sub-goals: ${parts.map((p) => p.requestedDeliverables[0]).join(" + ")}`);
+      }
+      return { intent, goalSpec };
     })
     .addNode("research", (state: OFState) => {
       const provider = new StaticKnowledgeProvider();
@@ -317,7 +368,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       });
       const journal = journalOf(state);
       journal.append("plan", "info", `task graph: ${plan.nodes.length} nodes, critical path ${topoSort(plan.nodes).length} — DAG will govern execution`);
-      journal.saveState({ request: state.request, runId: state.runId, intent: state.intent, templateId: state.templateId });
+      journal.saveState({ request: state.request, runId: state.runId, intent: state.intent, templateId: state.templateId, selection: state.selection });
       return { taskPlan: plan };
     })
     .addNode("prepare-workspace", (state: OFState) => {
@@ -344,7 +395,10 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       // generator-mode products are composed, not copied from a template
       if (state.templateId === "generator:agent-mvp") {
         const composed = composeAgentMvp(ws.workspacePath, state.intent!, gateway);
-        journalOf(state).append("prepare-workspace", "info", `agent-MVP composed: ${composed.files.length} original files written`);
+        // compose-time provenance manifest: the execution trust boundary later
+        // compares workspace scripts against these hashes (§6.2)
+        const prov = recordProvenance(ws.workspacePath, composed.files, gateway);
+        journalOf(state).append("prepare-workspace", "info", `agent-MVP composed: ${composed.files.length} original files written; provenance manifest: ${prov}`);
       }
       journalOf(state).append("prepare-workspace", "info", `workspace created: ${ws.workspacePath}; original blueprint persisted: ${bpPath}`);
       return { workspacePath: ws.workspacePath };
@@ -357,38 +411,32 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         throw new Error(`injected failure at ${failNode}`);
       }
       const plan = state.taskPlan!;
-      const dagCtx: DagContext = { journal, runsRoot: config.runsRoot, runId: state.runId, env: { workspacePath: state.workspacePath } };
+      const dagCtx: DagContext = { journal, runsRoot: config.runsRoot, runId: state.runId, env: { workspacePath: state.workspacePath }, artifactLedger: new Map() };
+      const templatesRoot = join(config.repoRoot, "templates");
 
       const executors: Record<string, TaskExecutor> = {
-        passthrough: async (node) => ({
-          status: "passed",
-          message: "completed by graph phase",
-          artifacts: [],
-          evidence: [
-            {
-              taskId: node.id,
-              commandOrTool: `graph-node:${node.operation}`,
-              environment: process.platform,
-              timestamp: nowIso(),
-              exitStatus: "passed",
-              artifactPaths: [],
-              summary: "executed as an orchestration graph node",
-            },
-          ],
-        }),
         execute: async (node: TaskNode) => {
           const ws = state.workspacePath;
           const gateway = new ToolGateway(defaultContext([ws, join(config.repoRoot, "projects")]));
           gateway.authorize("run", { target: ws });
           if (existsSync(join(ws, "scripts", "render.mjs"))) {
-            const r = runGoverned("node", ["scripts/render.mjs"], ws, 60_000);
+            // trust boundary: template-provenance scripts run on the host;
+            // modified/foreign scripts need a container or are refused
+            const r = runWorkspaceScript({
+              workspacePath: ws,
+              scriptRelPath: "scripts/render.mjs",
+              templateRoot: templatesRoot,
+              templateId: state.templateId,
+            });
+            if (r.blocked) return { status: "blocked", message: r.blocked, artifacts: [], evidence: [] };
             if (r.exitCode !== 0) return { status: "failed", message: `render failed: ${r.stderr.slice(0, 300)}`, artifacts: [], evidence: [] };
-            journal.append("execute", "info", "template rendered into dist/");
+            journal.append("execute", "info", `template rendered into dist/ (trusted=${!r.isolated}: ${r.trustReason.slice(0, 80)})`);
+            registerArtifact(dagCtx, { taskId: node.id, kind: "workspace-render", path: "dist/", summary: `render ok; trust: ${r.trustReason.slice(0, 120)}` });
             return {
               status: "passed",
               message: "template rendered",
               artifacts: ["dist/"],
-              evidence: [{ taskId: node.id, commandOrTool: "node scripts/render.mjs", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: ["dist/"], summary: "render ok" }],
+              evidence: [{ taskId: node.id, commandOrTool: `node scripts/render.mjs${r.isolated ? " (containerized)" : ""}`, environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: ["dist/"], summary: `render ok; trust: ${r.trustReason.slice(0, 120)}` }],
             };
           }
           if (existsSync(join(ws, "tests"))) {
@@ -398,21 +446,32 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
                   ? `tests/${readdirSync(join(ws, "tests")).find((f) => f.endsWith(".test.mjs"))}`
                   : null);
             if (suite) {
-              const r = runGoverned("node", [suite], ws, 60_000);
+              const r = runWorkspaceScript({
+                workspacePath: ws,
+                scriptRelPath: suite,
+                templateRoot: templatesRoot,
+                templateId: state.templateId,
+              });
+              if (r.blocked) return { status: "blocked", message: r.blocked, artifacts: [], evidence: [] };
               if (r.exitCode !== 0) return { status: "failed", message: `suite failed: ${r.stderr.slice(0, 300)}`, artifacts: [], evidence: [] };
-              journal.append("execute", "info", `template suite passed: ${suite}`);
+              journal.append("execute", "info", `template suite passed: ${suite} (trusted=${!r.isolated})`);
+              registerArtifact(dagCtx, { taskId: node.id, kind: "workspace-suite", path: suite, summary: `suite ok; trust: ${r.trustReason.slice(0, 120)}` });
               return {
                 status: "passed",
                 message: `suite passed: ${suite}`,
                 artifacts: [suite],
-                evidence: [{ taskId: node.id, commandOrTool: `node ${suite}`, environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: "template suite ok" }],
+                evidence: [{ taskId: node.id, commandOrTool: `node ${suite}${r.isolated ? " (containerized)" : ""}`, environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: `suite ok; trust: ${r.trustReason.slice(0, 120)}` }],
               };
             }
           }
           journal.append("execute", "warn", "no render step or suite; recorded honestly as scaffold-only");
+          registerArtifact(dagCtx, { taskId: node.id, kind: "workspace-scaffold", summary: "no executable step — recorded honestly as scaffold-only" });
           return { status: "passed", message: "scaffold-only (no executable step)", artifacts: [], evidence: [] };
         },
         verify: async () => {
+          // typed handoff: verification requires the workspace artifact from
+          // prepare-workspace/execute — missing upstream evidence fails loudly
+          requireArtifacts(dagCtx, ["t:execute"]);
           // repoRoot included: repo-owned skill entrypoints execute in the
           // trusted repo domain (they are versioned with the codebase)
           const gateway = new ToolGateway(defaultContext([state.workspacePath, config.repoRoot]));
@@ -448,6 +507,9 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           if (skillFailure) {
             return { status: "failed" as const, message: skillFailure, artifacts: [], evidence };
           }
+          if (result.passed) {
+            registerArtifact(dagCtx, { taskId: "t:verify", kind: "verification", schema: "omniforge://schemas/validation-result", summary: `${result.checks.length} checks passed vs original criteria` });
+          }
           return {
             status: result.passed ? ("passed" as const) : ("failed" as const),
             message: result.passed ? "all acceptance criteria passed" : result.failures.join(" | ").slice(0, 300),
@@ -457,9 +519,12 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         },
         package: async (node: TaskNode) => {
           if (config.skipExport) return { status: "skipped" as const, message: "export skipped by config", artifacts: [], evidence: [] };
+          // typed handoff: packaging consumes the verification artifact
+          requireArtifacts(dagCtx, ["t:verify"]);
           const gateway = new ToolGateway(defaultContext([state.workspacePath, config.runsRoot]));
           const artifact = exportWorkspace(state.workspacePath, join(config.runsRoot, state.runId, "export"), gateway);
           dagCtx.env["artifactPath"] = artifact.path;
+          registerArtifact(dagCtx, { taskId: "t:package", kind: "export-artifact", path: artifact.path, summary: `sha256 ${artifact.checksum.slice(0, 16)}` });
           journal.append("package", "info", `exported artifact ${artifact.path}`);
           return {
             status: "passed" as const,
@@ -469,24 +534,74 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           };
         },
         deliver: async (node: TaskNode) => {
+          // typed handoff: delivery requires the verification artifact, plus
+          // the package artifact whenever packaging was not skipped
+          const required = config.skipExport ? ["t:verify"] : ["t:verify", "t:package"];
+          const handoffs = requireArtifacts(dagCtx, required);
           const ws = readWorkspaceConfig(state.workspacePath);
           releaseLease(state.workspacePath, "workspace-manager");
           journal.append("deliver", "info", `delivered workspace ${String(ws["id"])} — preview: open dist/index.html or npx serve dist`);
           return {
             status: "passed" as const,
-            message: `delivered ${String(ws["id"])}`,
+            message: `delivered ${String(ws["id"])} (handoffs: ${handoffs.map((h) => h.kind).join(" + ")})`,
             artifacts: [],
-            evidence: [{ taskId: node.id, commandOrTool: "releaseLease", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: "delivery recorded" }],
+            evidence: [{ taskId: node.id, commandOrTool: "releaseLease", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [], summary: "delivery recorded with typed upstream handoffs" }],
+          };
+        },
+        report: async (node: TaskNode) => {
+          // real executor (never passthrough): record the per-task status
+          // table from the durable ledger as the run's job-graph artifact
+          const s = loadDagState(dagCtx);
+          const rows = Object.entries(s?.tasks ?? {})
+            .filter(([id]) => id !== node.id)
+            .map(([id, t]) => `${id}:${t.status}`)
+            .join(" ");
+          const runDir = join(config.runsRoot, state.runId);
+          mkdirSync(runDir, { recursive: true });
+          const reportPath = join(runDir, "dag-report.txt");
+          writeFileSync(reportPath, `run=${state.runId}\nworkspace=${state.workspacePath}\ntasks=${rows}\n`, "utf8");
+          registerArtifact(dagCtx, { taskId: node.id, kind: "job-report", path: reportPath, summary: rows });
+          journal.append("report", "info", `DAG job summary recorded: ${rows}`);
+          return {
+            status: "passed" as const,
+            message: `job graph recorded (${rows})`,
+            artifacts: ["dag-report.txt"],
+            evidence: [{ taskId: node.id, commandOrTool: "dag-ledger-report", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [reportPath], summary: rows.slice(0, 160) }],
           };
         },
       };
 
-      // Bind every plan task to its executor: project tasks execute for real,
-      // graph-phase tasks (intake..plan, prepare-workspace) already ran as
-      // graph nodes and pass through with recorded evidence.
+      // Bind every plan task to its executor. Graph-phase tasks (intake..plan,
+      // prepare-workspace) already ran as graph nodes just before — they get a
+      // recording executor with honest evidence. ANY OTHER task without a
+      // real executor is blocked, never passed (passthrough must never mark
+      // an unevaluated engineering task successful).
+      const graphPhaseExecutor: TaskExecutor = (node) =>
+        Promise.resolve({
+          status: "passed" as const,
+          message: "completed by graph phase",
+          artifacts: [],
+          evidence: [
+            {
+              taskId: node.id,
+              commandOrTool: `graph-node:${node.operation}`,
+              environment: process.platform,
+              timestamp: nowIso(),
+              exitStatus: "passed",
+              artifactPaths: [],
+              summary: "executed as an orchestration graph node",
+            },
+          ],
+        });
       const bound: Record<string, TaskExecutor> = {};
       for (const n of plan.nodes) {
-        bound[n.id] = executors[n.operation] ?? executors["passthrough"]!;
+        const opExecutor = executors[n.operation];
+        if (opExecutor) {
+          bound[n.id] = opExecutor;
+        } else if (GRAPH_PHASE_TASKS.includes(n.id)) {
+          bound[n.id] = graphPhaseExecutor;
+        }
+        // else: deliberately unbound — executeDag records it as blocked
       }
       // graph-phase tasks recorded as already passed so the DAG skips them
       // (their real execution happened as graph nodes just before)
@@ -496,6 +611,11 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         dagCtx
       );
       const verification = dagCtx.env["verification"] ? (JSON.parse(dagCtx.env["verification"]) as ValidationResult) : null;
+      // durable job-graph inputs for the §5.8 report (human + JSON)
+      const runDir = join(config.runsRoot, state.runId);
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "artifact-ledger.json"), JSON.stringify([...(dagCtx.artifactLedger?.entries() ?? [])].map(([taskId, a]) => ({ taskId, kind: a.kind, path: a.path ?? null, summary: a.summary })), null, 2), "utf8");
+      if (verification) writeFileSync(join(runDir, "verification.json"), JSON.stringify({ passed: verification.passed, checks: verification.checks.map((c) => ({ id: c.id, status: c.status, message: c.message })) }, null, 2), "utf8");
       const summary = Object.entries(dag.outcomes)
         .map(([id, o]) => `${id}:${o.status}`)
         .join(" ");
@@ -658,6 +778,7 @@ const INITIAL_STATE = {
   request: "",
   runId: "",
   intent: null,
+  goalSpec: null,
   researchNoteCount: 0,
   blueprint: null,
   selection: null,
@@ -701,4 +822,70 @@ export function runStatus(config: ServiceConfig, runId: string): { runId: string
 export { MemorySaver, detectCodingBackend };
 export { invokeSkill } from "./skills.js";
 export { executeDag, loadDagState, resetFailedTasks } from "./dag.js";
-export { executeRepair } from "./repair.js";
+export { executeRepair, signatureOf } from "./repair.js";
+
+/* ------------------------------------------------------------------ */
+/* Job graph report (§5.8): what actually ran, with evidence            */
+/* ------------------------------------------------------------------ */
+
+export interface JobGraphReport {
+  runId: string;
+  request: string;
+  selectedCapabilities: Array<{ capabilityId: string; role: string; reason: string }>;
+  tasks: Array<{ taskId: string; status: string; message: string; artifacts: string[] }>;
+  handoffs: Array<{ taskId: string; kind: string; path: string | null; summary: string }>;
+  verification: { passed: boolean; checks: Array<{ id: string; status: string; message: string }> } | null;
+  blockers: string[];
+  artifactPath: string;
+}
+
+/**
+ * Build the human + JSON job graph report from a finished run's durable state.
+ * Shows the capabilities selected, per-task outcomes, typed handoffs produced,
+ * verification evidence and precise blockers — never a plan-only view.
+ */
+export function buildJobGraphReport(config: ServiceConfig, runId: string): JobGraphReport | null {
+  const runDir = join(config.runsRoot, runId);
+  const journal = new RunJournal(config.runsRoot, runId);
+  const saved = journal.loadState<{
+    request?: string;
+    selection?: SkillSelection;
+    status?: string;
+  } | null>();
+  const dagState = loadDagState({ journal, runsRoot: config.runsRoot, runId, env: {} });
+  if (!dagState && !saved) return null;
+  let handoffs: JobGraphReport["handoffs"] = [];
+  const ledgerPath = join(runDir, "artifact-ledger.json");
+  if (existsSync(ledgerPath)) {
+    try {
+      handoffs = JSON.parse(readFileSync(ledgerPath, "utf8")) as JobGraphReport["handoffs"];
+    } catch {
+      handoffs = [];
+    }
+  }
+  let verification: JobGraphReport["verification"] = null;
+  const verifPath = join(runDir, "verification.json");
+  if (existsSync(verifPath)) {
+    try {
+      verification = JSON.parse(readFileSync(verifPath, "utf8")) as JobGraphReport["verification"];
+    } catch {
+      verification = null;
+    }
+  }
+  const blockers = [...journal.read()]
+    .filter((e) => e.level === "error" || /blocked|BLOCKED/i.test(e.message))
+    .slice(-5)
+    .map((e) => `[${e.node}] ${e.message.slice(0, 160)}`);
+  const packageTask = Object.entries(dagState?.tasks ?? {}).find(([id]) => id === "t:package");
+  return {
+    runId,
+    request: saved?.request ?? "",
+    selectedCapabilities: (saved?.selection?.selected ?? []).map((s) => ({ capabilityId: s.capabilityId, role: s.role, reason: s.reason })),
+    tasks: Object.entries(dagState?.tasks ?? {}).map(([taskId, t]) => ({ taskId, status: String(t.status), message: t.message, artifacts: t.artifacts })),
+    handoffs,
+    verification,
+    blockers,
+    artifactPath: packageTask?.[1]?.artifacts[0] ?? "",
+  };
+}
+export { understandWorkspace, applyDeterministicChange, changeManifest } from "./modify.js";

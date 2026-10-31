@@ -242,4 +242,52 @@ function safeReadConfig(workspacePath: string, key: string): string {
   return String(cfg[key] ?? "unknown");
 }
 
+/* ------------------------------------------------------------------ */
+/* Compose-time provenance manifest (universal-upgrade §3.3/§6.2)      */
+/* ------------------------------------------------------------------ */
+
+export interface ProvenanceManifest {
+  generator: string;
+  recordedAt: string;
+  /** relative path -> sha256 at compose time */
+  files: Record<string, string>;
+}
+
+/**
+ * Record the sha256 of every file the generator just wrote. Later, the
+ * execution trust boundary compares workspace scripts against this manifest:
+ * byte-identical content is trusted provenance; anything edited afterwards is
+ * untrusted generated code and requires a container (or is refused).
+ */
+export function recordProvenance(
+  workspacePath: string,
+  files: string[],
+  gateway: ToolGateway,
+  generator = "omniforge@0.2.0"
+): string {
+  gateway.checkPath(resolve(workspacePath));
+  const manifest: ProvenanceManifest = { generator, recordedAt: nowIso(), files: {} };
+  for (const rel of files) {
+    const abs = join(workspacePath, rel);
+    if (existsSync(abs) && statSync(abs).isFile()) {
+      manifest.files[rel.split("\\").join("/")] = createHash("sha256").update(readFileSync(abs)).digest("hex");
+    }
+  }
+  const dir = join(workspacePath, ".omniforge");
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, "provenance.json");
+  writeFileSync(out, JSON.stringify(manifest, null, 2), "utf8");
+  return out;
+}
+
+export function loadProvenance(workspacePath: string): ProvenanceManifest | null {
+  const p = join(workspacePath, ".omniforge", "provenance.json");
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as ProvenanceManifest;
+  } catch {
+    return null;
+  }
+}
+
 export { newId };

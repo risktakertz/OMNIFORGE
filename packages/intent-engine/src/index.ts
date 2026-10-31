@@ -11,12 +11,12 @@ import { newId, tokenize, nowIso } from "@omniforge/utils";
 
 const KIND_KEYWORDS: Array<{ kind: ProductKind; words: string[] }> = [
   { kind: "website", words: ["website", "web site", "webpage", "web page", "landing page", "portfolio", "homepage", "blog", "tovuti", "wavuti", "ukurasa"] },
-  { kind: "web-app", words: ["web app", "web application", "management system", "portal", "dashboard", "admin panel", "crm", "booking system", "school management", "system ya", "mfumo", "dashibodi", "book", "books", "booking", "appointments", "appointment", "reservation", "reservations", "scheduling"] },
+  { kind: "web-app", words: ["web app", "web application", "management system", "portal", "dashboard", "admin panel", "crm", "booking system", "school management", "system ya", "mfumo", "dashibodi", "book", "books", "booking", "appointments", "appointment", "reservation", "reservations", "scheduling", "marketplace", "market place"] },
   { kind: "saas", words: ["saas", "subscription platform", "multi-tenant", "sell to shops", "white-label"] },
   { kind: "mobile", words: ["android", "ios app", "mobile app", "phone app", "react native", "apk", "app ya simu", "programu ya simu"] },
-  { kind: "desktop", words: ["desktop app", "windows app", "mac app", "linux app", "installer", "desktop application"] },
+  { kind: "desktop", words: ["desktop app", "windows app", "mac app", "linux app", "installer", "desktop application", "desktop utility", "desktop tool", "windows desktop"] },
   { kind: "api", words: ["api", "rest api", "graphql", "backend service", "endpoint", "microservice"] },
-  { kind: "game-2d", words: ["2d game", "2d racing", "racing game", "platformer", "space shooter", "shooter", "puzzle game", "arcade", "game in the browser", "mchezo"] },
+  { kind: "game-2d", words: ["2d game", "2d racing", "racing game", "platformer", "platform game", "2d platform", "space shooter", "shooter", "puzzle game", "arcade", "game in the browser", "mchezo"] },
   { kind: "game-3d", words: ["3d game", "3d adventure", "open world", "fps", "first person", "3d"] },
   { kind: "ai", words: ["ai-powered", "chatbot", "customer support app with ai", "machine learning", "ai assistant", "llm", "coding agent", "ai coding", "code assistant", "coding assistant", "ai agent", "agent like claude", "claude code", "cloud agent"] },
   { kind: "automation", words: ["automation", "automated", "workflow", "reminder system", "integrate", "zapier-like", "notification system"] },
@@ -115,12 +115,23 @@ function detectKinds(request: string): { kinds: ProductKind[]; hints: string[] }
   }
   if (/\b(github|repository|repo)\b/.test(lower)) hints.push("github-integration");
   if (/\b(resume|checkpoint|interrupt)\b/.test(lower)) hints.push("checkpoint-resume");
+  // §12-U17: browser extensions are a recognized-but-unmapped domain — a
+  // typed NEEDS_MODEL gap is honest; a random website is not
+  if (/\b(browser extension|chrome extension|firefox add-?on|edge extension)\b/.test(lower)) {
+    hints.push("browser-extension");
+  }
 
   // disambiguation: "3d" implies game-3d even if the word game is implicit
   if (kinds.includes("game-3d") && kinds.includes("game-2d")) {
     return { kinds: kinds.filter((k) => k !== "game-2d"), hints };
   }
   if (kinds.length > 0) return { kinds, hints };
+
+  // a recognized-but-unmapped domain hint stays NOVEL even when a generic
+  // product noun appears — the domain needs a model-assisted capability route
+  if (hints.includes("browser-extension")) {
+    return { kinds: ["other"], hints: [...hints, "novel-domain"] };
+  }
 
   // novelty gate: an unmatched request must NOT silently become a bakery
   // website or generic REST scaffold. Generic product nouns allow a LOW-
@@ -287,3 +298,13 @@ export function describeIntent(intent: Intent): string {
     `unknowns=${intent.unknowns.length}`,
   ].join(" ");
 }
+
+// Universal goal interpretation (v1.2) — re-exported for the router/CLI.
+export {
+  buildGoalSpec,
+  mergeModelGoalSpec,
+  decomposeComposite,
+  scanExternalInstructions,
+  exceedsDeterministicScope,
+  type InjectionFinding,
+} from "./goal.js";

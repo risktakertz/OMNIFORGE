@@ -4,7 +4,7 @@
  * Real operations, structured JSON mode (--json) and readable beginner mode.
  * Every command runs through the deterministic policy gateway.
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
@@ -17,11 +17,13 @@ import { CapabilityRegistry } from "@omniforge/capability-registry";
 import { routeIntent } from "@omniforge/skill-router";
 import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
 import { LocalNodeBackend, OpenCodeBackend, detectOpenCode } from "@omniforge/agent-runtime";
-import { buildRegistry, probeOllama, routeModel } from "@omniforge/model-router";
+import { buildRegistry, probeOllama, routeModel, buildModelInterpreter } from "@omniforge/model-router";
 import { listWorkspaces, readWorkspaceConfig, exportWorkspace, acquireLease, releaseLease, loadBlueprint } from "@omniforge/workspace-manager";
 import { verifyWorkspace, runProjectTests, classifyFailure, independentFinalVerification } from "@omniforge/verification";
 import { dryRunDeploy, executeDeploy } from "@omniforge/deployment";
-import { createRun, resumeRun, runStatus } from "@omniforge/orchestration";
+import { createRun, resumeRun, runStatus, buildJobGraphReport } from "@omniforge/orchestration";
+import { understandWorkspace, applyDeterministicChange, changeManifest } from "@omniforge/orchestration";
+import { snapshotManifest } from "@omniforge/agent-runtime";
 
 const VERSION = "0.1.0";
 
@@ -65,7 +67,15 @@ function registryOf(c: Ctx): CapabilityRegistry {
 }
 
 function orchestratorConfig(c: Ctx) {
-  return { repoRoot: c.repoRoot, runsRoot: c.runsRoot, checkpointRoot: c.checkpointRoot, logger: c.log };
+  return {
+    repoRoot: c.repoRoot,
+    runsRoot: c.runsRoot,
+    checkpointRoot: c.checkpointRoot,
+    logger: c.log,
+    // §4.2: model-assisted interpretation activates ONLY when an authorized
+    // provider credential exists; otherwise novel goals stay honestly blocked
+    ...(buildModelInterpreter() ? { modelInterpreter: buildModelInterpreter()! } : {}),
+  };
 }
 
 function gatewayFor(c: Ctx, extraRoots: string[] = []): ToolGateway {
@@ -292,11 +302,12 @@ function inspectCmd(c: Ctx, target: string): Promise<void> {
 
 async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> {
   const p = resolve(target);
-  const cfg = readWorkspaceConfig(p);
   acquireLease(p, "cli-modify");
   const gateway = gatewayFor(c, [p]);
   const backend = new LocalNodeBackend(gateway);
   try {
+    // §7.2 repo-understanding pass BEFORE any edit
+    const understanding = understandWorkspace(p, c.repoRoot);
     // regression baseline: the ORIGINAL persisted acceptance criteria.
     // Legacy workspaces without a persisted blueprint are reported honestly
     // — an empty criteria list is never silently accepted as a baseline.
@@ -309,28 +320,39 @@ async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> 
       );
     }
     const before = await verifyWorkspace({ workspacePath: p, blueprint: baseline, backend });
-    const m = change.match(/set\s+(business\.name|business\.tagline|theme\.primary|theme\.accent|contact\.phone|contact\.email|contact\.whatsapp)\s+(.+)/i);
-    if (!m) {
-      throw new OmniforgeError("E_NOT_IMPLEMENTED", "v0.1 modify supports: set business.name|business.tagline|theme.primary|theme.accent|contact.phone|contact.email|contact.whatsapp <value> — scoped changes only; broader edits arrive with the repair engine pack");
+    // §7.3 baseline test results captured BEFORE the change
+    const beforeManifest = snapshotManifest(p);
+    let applied: ReturnType<typeof applyDeterministicChange>;
+    try {
+      applied = applyDeterministicChange({ workspacePath: p, change, repoRoot: c.repoRoot, gateway });
+    } catch (e) {
+      if (e instanceof OmniforgeError && e.code === "E_NEEDS_MODEL") {
+        // §3.5/§7.1: honest typed handoff to a coding backend — with the
+        // deterministic routes listed so the user can still act today
+        return out(
+          c,
+          { understanding, error: e.toJSON(), baselinePassed: before.passed },
+          `modify: this change needs a model-backed coding backend (typed E_NEEDS_MODEL)\n  change: ${change}\n  deterministic transforms available today: set <key> <value> | add service "<description>" | add section <id> "<heading>" | change text "<from>" to "<to>"\n  prerequisite: ${String(e.details["prerequisite"] ?? "configure opencode + model")}\n  baseline (original criteria) is untouched: ${before.passed ? "passed" : "failed"}`
+        );
+      }
+      throw e;
     }
-    const [, key, rawValue] = m;
-    const value = rawValue?.trim() ?? "";
-    const params = (cfg["params"] as Record<string, unknown>) ?? {};
-    const parts = key!.split(".");
-    const section = parts[0] === "business" ? "business" : parts[0] === "theme" ? "theme" : "contact";
-    const merged = { ...(params[section] as Record<string, unknown> ?? {}), [parts[1]!]: value };
-    params[section] = merged;
-    cfg["params"] = params;
-    writeFileSync(join(p, "project.config.json"), JSON.stringify(cfg, null, 2), "utf8");
-    gateway.authorize("render", { target: p });
-    const { execFileSync } = await import("node:child_process");
-    execFileSync("node", ["scripts/render.mjs"], { cwd: p, stdio: "pipe", timeout: 60_000 });
     const after = await verifyWorkspace({ workspacePath: p, blueprint: baseline, backend });
+    const manifest = changeManifest(p, beforeManifest);
     const classification = after.passed ? null : classifyFailure(after.failures.join("; "), 1);
+    const report = {
+      understanding: { templateId: understanding.templateId, languages: understanding.languages, files: understanding.files.length },
+      ...applied,
+      manifest,
+      before: before.passed,
+      after: after.passed,
+      failures: after.failures,
+      classification,
+    };
     return out(
       c,
-      { changed: `${section}.${parts[1]}`, value, before: before.passed, after: after.passed, failures: after.failures, classification },
-      `modify complete: ${section}.${parts[1]} = "${value}"\n  baseline (original criteria): ${before.passed ? "passed" : "failed"} -> after: ${after.passed ? "passed" : "failed"}\n${after.failures.length ? "  failures: " + after.failures.join("; ") : "  no regressions against original acceptance criteria"}`
+      report,
+      `modify complete (${applied.transform}): ${applied.changedFiles.join(", ") || "config only"}\n  render trust: ${applied.renderTrusted}\n  baseline (original criteria): ${before.passed ? "passed" : "failed"} -> after: ${after.passed ? "passed" : "failed"}\n${after.failures.length ? "  failures: " + after.failures.join("; ") : "  no regressions against original acceptance criteria"}\n  rollback: ${applied.rollbackHint}`
     );
   } finally {
     releaseLease(p, "cli-modify");
@@ -366,10 +388,12 @@ async function testCmd(c: Ctx, target: string): Promise<void> {
 function statusCmd(c: Ctx, runId: string): Promise<void> {
   const s = runStatus(orchestratorConfig(c), runId);
   const state = s.state as { hasCheckpoint: boolean; completed: string[] };
+  // §5.8 job graph report: what actually ran, with evidence and blockers
+  const jobGraph = buildJobGraphReport(orchestratorConfig(c), runId);
   return out(
     c,
-    s,
-    `run ${s.runId}\n  checkpoint: ${state.hasCheckpoint ? "present (resumable)" : "none"}\n  journal events: ${s.journal.length}\n${s.journal.slice(-6).map((e) => `  [${e.node}] ${e.message}`).join("\n")}`
+    { ...s, jobGraph },
+    `run ${s.runId}\n  checkpoint: ${state.hasCheckpoint ? "present (resumable)" : "none"}\n  journal events: ${s.journal.length}\n${s.journal.slice(-6).map((e) => `  [${e.node}] ${e.message}`).join("\n")}${jobGraph ? `\n  job graph: ${jobGraph.tasks.length} tasks, ${jobGraph.handoffs.length} handoffs, verification=${jobGraph.verification?.passed ? "passed" : jobGraph.verification ? "failed" : "n/a"}${jobGraph.blockers.length ? `, blockers: ${jobGraph.blockers.length}` : ""}` : ""}`
   ), Promise.resolve();
 }
 
@@ -454,7 +478,7 @@ async function main(): Promise<void> {
     case "create": return createCmd(c, request);
     case "inspect": return inspectCmd(c, rest[0] ?? ".");
     case "modify":
-      if (rest.length < 2) throw new OmniforgeError("E_INTENT_UNCLEAR", 'usage: omniforge modify <project-path> "set business.name Kali Salon"');
+      if (rest.length < 2) throw new OmniforgeError("E_INTENT_UNCLEAR", 'usage: omniforge modify <project-path> "set business.name Kali Salon" | "add service Catering \"Desc\"" | "add section gallery \"Gallery\"" | "change text \"x\" to \"y\""');
       return modifyCmd(c, rest[0]!, rest.slice(1).join(" "));
     case "test": return testCmd(c, rest[0] ?? ".");
     case "status": return statusCmd(c, rest[0] ?? "");

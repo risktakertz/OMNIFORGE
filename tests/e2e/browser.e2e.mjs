@@ -8,14 +8,19 @@
  *   - the contact form accepts input and shows its success state
  *   - responsive layout (mobile viewport) keeps navigation usable
  *
- * Exit codes: 0 = ran (or honestly BLOCKED when no browser is installed),
- * 1 = ran and FAILED. A missing browser is never reported as a pass.
+ * Exit codes: 0 = ran and passed, or honestly BLOCKED when no browser is
+ * installed AND required-mode is OFF (local opt-in behavior);
+ * 1 = ran and FAILED, or BLOCKED while OF_E2E_REQUIRED=1 (CI/release mode:
+ * a required browser check that did not execute must fail readiness, §11.3).
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const REQUIRED = process.env.OF_E2E_REQUIRED === "1";
+const blockExit = () => process.exit(REQUIRED ? 1 : 0);
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = join(repoRoot, "apps", "cli", "dist", "index.js");
@@ -55,18 +60,18 @@ async function main() {
   try {
     ({ chromium } = await import("playwright"));
   } catch {
-    console.log("BLOCKED - browser E2E: playwright not installed (npm i -D playwright && npx playwright install chromium)");
+    console.log(`BLOCKED - browser E2E: playwright not installed (npm i -D playwright && npx playwright install chromium)${REQUIRED ? " — REQUIRED mode: failing readiness" : ""}`);
     server.close();
-    process.exit(0);
+    blockExit();
   }
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
   } catch (e) {
-    console.log(`BLOCKED - browser E2E: chromium launch failed (${String(e.message).split("\n")[0].slice(0, 120)})`);
+    console.log(`BLOCKED - browser E2E: chromium launch failed (${String(e.message).split("\n")[0].slice(0, 120)})${REQUIRED ? " — REQUIRED mode: failing readiness" : ""}`);
     console.log("         install browsers with: npx playwright install chromium");
     server.close();
-    process.exit(0);
+    blockExit();
   }
 
   const failures = [];

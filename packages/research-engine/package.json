@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@omniforge/shared-types": "workspace:*",
-    "@omniforge/utils": "workspace:*"
+    "@omniforge/utils": "workspace:*",
+    "@omniforge/tool-gateway": "workspace:*"
   }
 }

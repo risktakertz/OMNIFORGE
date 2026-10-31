@@ -165,3 +165,94 @@ Baseline audit with the incident matrix: `docs/audits/2026-10-31-autonomy-baseli
   runtime, Godot/Expo toolchains — all probed and reported by `doctor`; live
   backend smoke and container isolation stay BLOCKED until the operator
   supplies them. Nothing fabricated.
+
+## 2026-10-31 — Universal capability upgrade session (surgical enhancement mission)
+
+**Baseline:** `main` @ `53dffd6` (PR #1 merge, CI green). Directive:
+`OMNIFORGE_UNIVERSAL_SKILL_AUTONOMY_UPGRADE_MASTER_PROMPT.md`. Audit first, no
+re-implementation of PR #1 work: gap matrix in
+`docs/audits/2026-10-31-universal-upgrade-audit.md` (22 findings; one retracted
+after Read-tool verification — recorded transparently).
+
+### What actually changed (evidence-first, backward compatible)
+
+- **M1 security/verification:** repo-push is now approval-gated with
+  path-normalized scoped approvals (a raw `root/../elsewhere` target can no
+  longer satisfy a scoped approval — found by the new regression test);
+  `runIsolated` container provider composes real docker/podman argv (no-network
+  default, non-root, bounded CPU/mem/pids) and refuses typed without a runtime;
+  `scriptTrust` provenance boundary (template byte-identity OR compose-time
+  `.omniforge/provenance.json`) gates EVERY workspace script execution through
+  `runWorkspaceScript` — tampered workspace scripts require a container or are
+  refused, never silently host-executed; browser E2E gained `OF_E2E_REQUIRED=1`
+  (BLOCKED → exit 1) and CI now installs cached chromium and runs REQUIRED mode
+  (§11.3: BLOCKED ≠ passed); unknown DAG operations are BLOCKED, never
+  passthrough-passed (§5.3).
+- **M2 CodingBackend v3:** AgentTaskSpec carries task id, project context,
+  bounded writable/forbidden file scope, acceptance criteria, allowed tools,
+  expected artifacts, budget and risk; `features()` capability flags;
+  `prepare()` baseline manifests; cooperative `cancel()`; async cancellable
+  OpenCode execution (full instruction as ONE argv element, no shell); change
+  detection via baseline-manifest hashes — a git repo is NO longer required and
+  untracked changes always count (§3.3); scope violations fail the task
+  (§3.6); `selectExecutionRoute()` typed decisions (template reuse → backend →
+  E_NEEDS_MODEL / E_BACKEND_BLOCKED with prerequisites).
+- **M3 universal intent:** versioned `GoalSpec` (assets, environment, NFRs,
+  privacy, licensing, risks, budget, deliverables, unresolved questions);
+  `mergeModelGoalSpec` — model text can fill understanding but NEVER policy
+  fields (constraints/privacy/licensing/budget stay deterministic); composite
+  decomposition; `scanExternalInstructions` prompt-injection scan wired into
+  the capability registry (hostile SKILL.md → blocked, adversarial test);
+  machine-readable `operations:` metadata + `findByOperation()` operation-first
+  routing with explicit exclusion reasons; `E_SCOPE_EXCEEDS_DETERMINISTIC`
+  typed blocker for data-entity + access-control products (U03/U16 no longer
+  misroute to static templates); 19 composable primitives with dependency/
+  conflict constraints; `buildWorkBlueprint` for five non-code deliverable
+  kinds with executable evidence criteria.
+- **M4 execution:** typed `registerArtifact`/`requireArtifacts` handoffs with
+  durable ledger rebuild on resume; `buildJobGraphReport` (tasks, handoffs,
+  verification, blockers) surfaced via `omniforge status`; GoalSpec built every
+  run; `modelInterpreter` hook activates ONLY with an authorized credential
+  (env-based OpenAI-compatible client in model-router).
+- **M5 generalized modify:** repo-understanding pass + deterministic transforms
+  (`add service`, `add section` with nav wiring, bounded exact `change text`)
+  with per-file rollback backups, trust-gated re-render and regression
+  re-verification against the ORIGINAL criteria; broader changes → typed
+  E_NEEDS_MODEL handoff listing the deterministic routes (never
+  E_NOT_IMPLEMENTED).
+- **M6 authorized REA:** `planAnalysis` gate (refuses DRM/circumvention
+  regardless of claimed authorization; requires rights evidence; refuses
+  binary/package analysis without a container); `analyzePricingFixture` —
+  authorized toy fixture → behavior matrix → reproducible spec (observation
+  labeled separately from inference) → ORIGINAL clean-room implementation →
+  equivalence proof over the domain (archetype: continuous piecewise-linear
+  functions; others → typed NEEDS_MODEL).
+- **M7 acceptance + docs:** `tests/acceptance/universal.test.ts` implements the
+  U-series (10 executed real paths incl. full create/modify/repair/REA flows;
+  7 precise typed blockers; 5 adversarial additions incl. hostile skill
+  metadata, unbound-operation DAG, zero-spend gate); SKILL.md now documents
+  operation families + truthful vocabulary; CAPABILITY_MATRIX and
+  RELEASE_MANIFEST record every addition with evidence and explicit
+  not-verified-here prerequisites.
+
+### Final verification of this session (evidence)
+
+- `pnpm lint` clean; typecheck+build 17/17; tests **237 passed / 0 failed**
+  (up from 174 — 63 new tests, zero existing tests weakened; the repo-push test
+  was STRENGTHENED from allow-always to scoped-approval semantics); e2e green;
+  manual CLI runs: create → verification PASSED + independent verifier PASS;
+  modify add-service/add-section/change-text all regression-safe; E_NEEDS_MODEL
+  handoff verified live.
+- Live acceptance evidence regenerated under `projects/` (git-ignored);
+  REA fixture under `tests/fixtures/rea-sample-app/` (repo-owned, MIT).
+- GitHub discipline: zero forks, one push, no re-runs, read-only API use only;
+  `APPROVED_SPEND=0` preserved everywhere; no secrets in logs (redaction on
+  every backend output).
+
+### Honest gaps (unchanged prerequisites, typed)
+
+opencode binary + model credentials (live autonomy), docker/podman (real
+container isolation), Android/Rust/Godot toolchains (native builds), model
+credentials (live model-assisted interpretation). All four are probed by
+`omniforge doctor`, produce typed blockers with setup instructions, and have
+executable opt-in tests that run the moment the prerequisite exists.

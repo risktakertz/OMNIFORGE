@@ -46,3 +46,14 @@ jobs:
 
       - name: E2E (built CLI acceptance)
         run: pnpm e2e
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Browser E2E (REQUIRED mode — §11.3: BLOCKED ≠ passed)
+        run: |
+          npx playwright install --with-deps chromium
+          OF_E2E_REQUIRED=1 node tests/e2e/browser.e2e.mjs

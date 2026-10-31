@@ -16,6 +16,7 @@
   "dependencies": {
     "@omniforge/shared-types": "workspace:*",
     "@omniforge/utils": "workspace:*",
-    "yaml": "^2.7.0"
+    "yaml": "^2.7.0",
+    "@omniforge/intent-engine": "workspace:*"
   }
 }

@@ -110,6 +110,9 @@ importers:
 
   packages/capability-registry:
     dependencies:
+      '@omniforge/intent-engine':
+        specifier: workspace:*
+        version: link:../intent-engine
       '@omniforge/shared-types':
         specifier: workspace:*
         version: link:../shared-types
@@ -220,6 +223,9 @@ importers:
       '@omniforge/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@omniforge/tool-gateway':
+        specifier: workspace:*
+        version: link:../tool-gateway
       '@omniforge/utils':
         specifier: workspace:*
         version: link:../utils
@@ -235,6 +241,9 @@ importers:
       '@omniforge/capability-registry':
         specifier: workspace:*
         version: link:../capability-registry
+      '@omniforge/intent-engine':
+        specifier: workspace:*
+        version: link:../intent-engine
       '@omniforge/shared-types':
         specifier: workspace:*
         version: link:../shared-types

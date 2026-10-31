@@ -192,3 +192,13 @@ export class HostedDocsProvider implements DocumentationProvider {
     throw new OmniforgeError("E_BACKEND_UNAVAILABLE", `hosted docs unavailable: ${this.reason}`);
   }
 }
+
+// Authorized reverse engineering (v1.2, §9)
+export {
+  planAnalysis,
+  analyzePricingFixture,
+  loadBehaviorSpec,
+  type PlanAnalysisInput,
+  type BehaviorRow,
+  type FixtureAnalysisResult,
+} from "./rea.js";

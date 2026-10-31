@@ -12,6 +12,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { Capability, OmniforgeError, type Capability as CapabilityT } from "@omniforge/shared-types";
+import { scanExternalInstructions } from "@omniforge/intent-engine";
 
 export interface SkillMeta {
   id: string;
@@ -76,6 +77,12 @@ function validateSkill(meta: SkillMeta, dir: string, body: string): string[] {
     const target = join(dir, ref);
     if (!existsSync(target)) errors.push(`referenced file missing: ${ref}`);
   }
+  // §4.9: third-party skill content is untrusted DATA — prompt-injection
+  // patterns in a SKILL.md block the skill instead of executing
+  const injection = scanExternalInstructions(`${meta.description}\n${body}`, meta.id);
+  if (injection.length > 0) {
+    errors.push(`prompt-injection pattern blocked by policy (${injection.map((f) => f.label).join(", ")})`);
+  }
   if (existsSync(join(dir, "references"))) {
     for (const f of readdirSync(join(dir, "references"))) {
       const p = join(dir, "references", f);
@@ -134,12 +141,14 @@ export function scanSkillDirs(dirs: string[]): ScanResult {
 }
 
 export function skillToCapability(meta: SkillMeta): CapabilityT {
+  const declared = Array.isArray(meta.metadata?.operations) ? (meta.metadata?.operations as string[]) : null;
   return Capability.parse({
     id: `skill:${meta.id}`,
     kind: "skill",
     source: meta.path,
     version: String((meta.metadata?.version as string) ?? "0.1.0"),
     capabilities: Array.isArray(meta.metadata?.capabilities) ? (meta.metadata?.capabilities as string[]) : [meta.id],
+    operations: declared ?? defaultOperationsFor(meta.id),
     inputSchemaRef: "omniforge://schemas/project-intent",
     outputSchemaRef: "omniforge://schemas/skill-selection",
     requirements: Array.isArray(meta.metadata?.requirements) ? (meta.metadata?.requirements as string[]) : [],
@@ -152,6 +161,23 @@ export function skillToCapability(meta: SkillMeta): CapabilityT {
       ? `skill:entrypoint ${String(meta.metadata.entrypoint)} (executed with typed JSON stdin/stdout under the gateway)`
       : "registry:frontmatter-valid",
   });
+}
+
+/** Honest default operations for skills that do not declare them. */
+function defaultOperationsFor(skillId: string): string[] {
+  const table: Record<string, string[]> = {
+    omniforge: ["create", "modify", "debug", "analyze", "test", "deploy"],
+    testing: ["test", "debug"],
+    debugging: ["debug", "modify"],
+    research: ["analyze"],
+    architecture: ["analyze", "create"],
+    "reverse-engineering": ["analyze"],
+    security: ["analyze", "test"],
+    performance: ["analyze", "test"],
+    release: ["deploy", "create"],
+    documentation: ["create", "analyze"],
+  };
+  return table[skillId] ?? ["create"];
 }
 
 export function templateCapabilities(templatesRoot: string): CapabilityT[] {
@@ -172,6 +198,7 @@ export function templateCapabilities(templatesRoot: string): CapabilityT[] {
         source: relative(process.cwd(), dir) || dir,
         version: "0.1.0",
         capabilities: [`scaffold-${entry}`],
+        operations: ["create", "modify"],
         availability: hasSelfTest ? "configured" : "untested",
         risk: "low",
         cost: "free",
@@ -195,6 +222,7 @@ export function generatorCapabilities(): CapabilityT[] {
       source: "packages/orchestration/src/agent-mvp.ts",
       version: "0.1.0",
       capabilities: ["compose-agent-mvp", "cli-agent-loop", "checkpoint-resume", "github-adapter", "allowlist-sandbox"],
+      operations: ["create"],
       inputSchemaRef: "omniforge://schemas/project-intent",
       outputSchemaRef: "omniforge://schemas/workspace",
       requirements: ["node >= 20"],
@@ -267,6 +295,18 @@ export class CapabilityRegistry {
     this.ensure();
     const meta = this.lastScan?.skills.find((sk) => `skill:${sk.id}` === id);
     return meta?.entrypoint ?? null;
+  }
+
+  /**
+   * §4.3/§4.4 operation-compatibility lookup: capabilities that DECLARE the
+   * operation and are actually selectable (not blocked/unavailable). The
+   * router uses this FIRST — before any keyword ranking.
+   */
+  findByOperation(operation: string): CapabilityT[] {
+    this.ensure();
+    return this.list().filter(
+      (c) => c.operations.includes(operation) && c.availability !== "blocked" && c.availability !== "unavailable"
+    );
   }
 
   validateAll(): { valid: boolean; errors: SkillIssue[]; skillErrors: Array<{ id: string; errors: string[] }> } {

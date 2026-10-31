@@ -19,7 +19,10 @@ export interface FamilyPlan {
 }
 
 export function classifyFamily(intent: ProjectIntent): FamilyPlan {
-  const req = intent.explicitRequirements.join(" ").toLowerCase();
+  // the FULL request participates in family detection (not only extracted
+  // requirement fragments) — a "dashboard from CSV" request must not fall
+  // through to the node family just because extraction missed the word
+  const req = `${intent.request} ${intent.explicitRequirements.join(" ")}`.toLowerCase();
   const kinds = intent.productKinds;
   const isLiteStatic =
     kinds.includes("website") ||
@@ -172,7 +175,8 @@ const RE_BOOKING = /\b(book|books|booking|appointments?|reservations?|scheduling
 const RE_DASHBOARD = /\b(dashboards?|metrics|analytics|kpis?|admin panels?)\b/;
 
 function pickScope(intent: ProjectIntent, family: Family): KindScope {
-  const req = intent.explicitRequirements.join(" ").toLowerCase();
+  // full request participates (same rationale as classifyFamily)
+  const req = `${intent.request} ${intent.explicitRequirements.join(" ")}`.toLowerCase();
   const kinds = intent.productKinds;
   // the decisive scenario: a cloud-ready AI coding agent MVP (original,
   // composable runtime — never a copied template or a renamed REST scaffold)
@@ -271,3 +275,15 @@ export function buildBlueprint(intent: ProjectIntent): Blueprint {
 export function nowIsoBlueprintStamp(): string {
   return nowIso();
 }
+
+// Universal work blueprints + composable primitives (v1.2)
+export { buildWorkBlueprint, workStamp } from "./work.js";
+export {
+  PRIMITIVES,
+  PRIMITIVE_IDS,
+  getPrimitive,
+  composePrimitives,
+  suggestAdditions,
+  type Primitive,
+  type CompositionResult,
+} from "./primitives.js";

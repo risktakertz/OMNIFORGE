@@ -51,3 +51,27 @@ Model output is untrusted input. Anything a model produces is validated before
 it influences a run, is never auto-executed, and is subject to the same
 sanitization rules as any other external content. `registrySnapshot()` and the
 `omniforge models` command expose the current registry honestly.
+
+---
+
+## Model-assisted goal interpretation (v0.2)
+
+The orchestration graph accepts an optional `modelInterpreter` hook. The CLI
+wires it automatically when `OPENAI_API_KEY` is present (OpenAI-compatible;
+honor `OPENAI_BASE_URL` / `OPENAI_MODEL` for compatible providers):
+
+- **No credential** → novel/unmatched goals return the honest typed blocker
+  `E_INTENT_NOVEL` / `E_NEEDS_MODEL` with setup instructions. Nothing is
+  fabricated and no silent template mapping happens.
+- **Credential present** → the interpreter requests structured JSON
+  (temperature 0.1, response_format json_object) describing the goal. The
+  result is merged by `mergeModelGoalSpec`, which can fill understanding
+  fields (objective, requirements, deliverables, risks) but can NEVER change
+  policy fields: constraints, privacy, licensing and budget always come from
+  the deterministic side. Requests are truncated to 4000 chars; calls time out
+  at 30s; key values are never logged.
+
+Status vocabulary applies here too: a provider with a key present is
+`configured`, not `verified` — the first successful structured interpretation
+is the verification event, and quality evaluation remains the operator's
+authorized responsibility.

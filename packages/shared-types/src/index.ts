@@ -133,6 +133,8 @@ export const Capability = z.object({
   source: z.string().min(1),
   version: z.string().min(1),
   capabilities: z.array(z.string()).default([]),
+  /** machine-readable supported operations (§4.3): create/modify/debug/analyze/test/deploy */
+  operations: z.array(z.string()).default([]),
   inputSchemaRef: z.string().default("none"),
   outputSchemaRef: z.string().default("none"),
   requirements: z.array(z.string()).default([]),
@@ -377,6 +379,13 @@ export const FailureCodes = [
   "E_NOT_IMPLEMENTED",
   "E_WORKSPACE_LOCKED",
   "E_BACKEND_UNAVAILABLE",
+  // v1.2 (universal capability upgrade):
+  "E_HANDOFF_MISSING", // typed DAG handoff: upstream artifact absent
+  "E_NEEDS_MODEL", // model-assisted interpretation/generation required, none ready
+  "E_BACKEND_BLOCKED", // coding backend cannot accept this task (typed, with prerequisite)
+  "E_AUTHORIZATION_REQUIRED", // REA/inspection without a documented rights basis
+  "E_SCOPE_EXCEEDS_DETERMINISTIC", // requirements exceed template scope — model-backed path required
+  "E_DELIVERABLE_UNSUPPORTED", // requested deliverable kind has no available capability
 ] as const;
 export type FailureCode = (typeof FailureCodes)[number];
 
@@ -432,3 +441,109 @@ export const GRAPH_NODES = [
   "report",
 ] as const;
 export type GraphNode = (typeof GRAPH_NODES)[number];
+
+/* ------------------------------------------------------------------ */
+/* v1.2 — universal capability contracts                               */
+/* ------------------------------------------------------------------ */
+
+/** Deliverable kinds OMNIFORGE can produce (not every product is a webpage). */
+export const DeliverableKind = z.enum([
+  "source-project",
+  "website",
+  "api-service",
+  "mobile-app",
+  "desktop-app",
+  "game-project",
+  "ai-agent",
+  "automation-workflow",
+  "analysis-report",
+  "behavior-spec",
+  "test-harness",
+  "migration-plan",
+  "comparison-study",
+]);
+export type DeliverableKind = z.infer<typeof DeliverableKind>;
+
+/**
+ * GoalSpec — the extensible, universal form of a user goal (§4.1).
+ * Compatible superset of ProjectIntent: everything deterministic parsing can
+ * fill today, plus the fields a model-assisted interpreter may supply.
+ * Security/permission policy fields (constraints, permissions) are NEVER
+ * overridable by model output — they are merged only from trusted callers.
+ */
+export const GoalSpec = z.object({
+  specVersion: z.literal("1.0").default("1.0"),
+  goalId: z.string().min(3),
+  sourceIntentId: z.string().optional(),
+  objective: z.string().min(1),
+  operation: OperationKind,
+  targetProduct: z.string().default("unspecified"),
+  platforms: z.array(z.string()).default([]),
+  targetEnvironment: z.string().default("local"),
+  suppliedAssets: z.array(z.object({ kind: z.string(), ref: z.string() })).default([]),
+  repositories: z.array(z.string()).default([]),
+  functionalRequirements: z.array(z.string()).default([]),
+  nonFunctionalRequirements: z.array(z.string()).default([]),
+  assumptions: z.array(Assumption).default([]),
+  constraints: z.array(z.string()).default([]),
+  privacy: z.string().default("no PII collection without explicit user statement"),
+  licensing: z.string().default("user retains rights to supplied content; output is original"),
+  risks: z.array(z.string()).default([]),
+  budget: z.object({ currency: z.string().default("USD"), max: z.number().min(0).default(0) }).default({}),
+  requestedDeliverables: z.array(DeliverableKind).min(1).default(["source-project"]),
+  acceptanceCriteria: z
+    .array(z.object({ id: z.string(), criterion: z.string(), evidenceMethod: z.string() }))
+    .default([]),
+  unresolvedQuestions: z.array(Unknown).default([]),
+  interpreter: z.enum(["deterministic", "model-assisted", "hybrid"]).default("deterministic"),
+  confidence: z.number().min(0).max(1).default(0.5),
+});
+export type GoalSpec = z.infer<typeof GoalSpec>;
+
+/**
+ * CapabilityInvocation — the versioned executable skill contract (§5.1).
+ * What a gateway records when it actually invokes a capability.
+ */
+export const CapabilityInvocation = z.object({
+  id: z.string().min(3),
+  capabilityId: z.string().min(3),
+  capabilityVersion: z.string().default("0.0.0"),
+  operation: z.string().min(1),
+  protocol: z.enum(["library", "process", "mcp", "skill-script", "engine-cli", "coding-backend"]),
+  input: z.unknown().optional(),
+  workspace: z.string().optional(),
+  permissions: z.array(z.string()).default([]),
+  budgetMs: z.number().int().positive().default(90_000),
+  timeoutMs: z.number().int().positive().default(90_000),
+  idempotencyKey: z.string().optional(),
+  status: z.enum(["passed", "failed", "skipped", "blocked"]),
+  output: z.unknown().optional(),
+  artifacts: z.array(z.string()).default([]),
+  logsRedacted: z.string().default(""),
+  error: z.string().optional(),
+  costMeasured: z.string().default("0 USD"),
+  durationMs: z.number().int().nonnegative().default(0),
+  evidence: z.array(Evidence).default([]),
+});
+export type CapabilityInvocation = z.infer<typeof CapabilityInvocation>;
+
+/**
+ * AnalysisPlan — authorized reverse-engineering contract (§9.3).
+ * No analysis runs without a documented rights basis; tool and output scopes
+ * are explicit; confidentiality is honored in every produced artifact.
+ */
+export const AnalysisPlan = z.object({
+  id: z.string().min(3),
+  target: z.string().min(1),
+  format: z.enum(["source-repo", "binary", "package", "documented-api", "protocol", "fixture"]),
+  provenance: z.string().min(1),
+  rightsBasis: z.enum(["owner", "authorized", "public-documentation", "interoperability-research"]),
+  rightsEvidence: z.string().default(""),
+  allowedTools: z.array(z.string()).default([]),
+  sandboxRequired: z.boolean().default(true),
+  expectedArtifacts: z.array(DeliverableKind).min(1),
+  confidentiality: z.enum(["public", "internal", "restricted"]).default("internal"),
+  riskNotes: z.array(z.string()).default([]),
+  createdAt: z.string().datetime().optional(),
+});
+export type AnalysisPlan = z.infer<typeof AnalysisPlan>;
