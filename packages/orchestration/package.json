@@ -1,0 +1,36 @@
+{
+  "name": "@omniforge/orchestration",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LangGraph.js pipeline with durable file-backed checkpoints, run journal and resume.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omniforge/shared-types": "workspace:*",
+    "@omniforge/utils": "workspace:*",
+    "@omniforge/observability": "workspace:*",
+    "@omniforge/intent-engine": "workspace:*",
+    "@omniforge/research-engine": "workspace:*",
+    "@omniforge/blueprint-engine": "workspace:*",
+    "@omniforge/capability-registry": "workspace:*",
+    "@omniforge/skill-router": "workspace:*",
+    "@omniforge/task-planner": "workspace:*",
+    "@omniforge/tool-gateway": "workspace:*",
+    "@omniforge/workspace-manager": "workspace:*",
+    "@omniforge/verification": "workspace:*",
+    "@omniforge/model-router": "workspace:*",
+    "@omniforge/agent-runtime": "workspace:*",
+    "@omniforge/deployment": "workspace:*",
+    "@langchain/langgraph": "0.2.74",
+    "@langchain/langgraph-checkpoint": "~0.0.18",
+    "@langchain/core": "^0.3.50"
+  }
+}
