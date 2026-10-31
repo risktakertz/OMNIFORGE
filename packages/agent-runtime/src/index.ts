@@ -156,12 +156,8 @@ export class LocalNodeBackend implements CodingBackend {
   }
 
   async runTask(spec: RunTaskSpec): Promise<BackendResult> {
-    // least privilege: every execution passes the deterministic gateway first
-    this.gateway.authorize("run", { target: spec.cwd, command: redactSecrets(spec.command) });
-    const timeoutMs = spec.timeoutMs ?? 120_000;
-    const max = spec.maxBufferBytes ?? this.opts.maxBufferBytes ?? 512 * 1024;
-    // argv execution — composed strings are tokenized and rejected if they
-    // contain shell metacharacters or non-allowlisted binaries (D2)
+    // least privilege: argv-tokenize first, then the gateway enforces the
+    // sandbox policy (D2) — non-allowlisted binaries need a container runtime
     const argv = tokenizeCommand(spec.command);
     if (!argv) {
       return {
@@ -173,6 +169,11 @@ export class LocalNodeBackend implements CodingBackend {
         signal: null,
       };
     }
+    // policy denial fails LOUD (typed error) — escapes/injection/sandbox gaps
+    // must never be surfaced as a mere non-zero exit
+    this.gateway.authorizeExec(argv[0]!, argv.slice(1), { cwd: spec.cwd, tool: "run" });
+    const timeoutMs = spec.timeoutMs ?? 120_000;
+    const max = spec.maxBufferBytes ?? this.opts.maxBufferBytes ?? 512 * 1024;
     const started = Date.now();
     return await new Promise<BackendResult>((resolveP) => {
       const child = spawn(argv[0]!, argv.slice(1), {
