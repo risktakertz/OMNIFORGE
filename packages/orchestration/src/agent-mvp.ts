@@ -282,7 +282,8 @@ export function run(commandArgs, { cwd, timeoutMs = 60_000, env = process.env } 
   delete cleanEnv.NODE_TEST_CONTEXT;
   delete cleanEnv.VITEST_POOL_ID;
   delete cleanEnv.JEST_WORKER_ID;
-  const r = spawnSync(bin, commandArgs.slice(1), { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
+  const executable = bin === "node" ? process.execPath : bin;
+  const r = spawnSync(executable, commandArgs.slice(1), { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
   const timedOut = Boolean(r.error && r.error.code === "ETIMEDOUT");
   return {
     ok: r.status === 0 && !timedOut,
@@ -557,6 +558,8 @@ test("sandbox enforces the allowlist and refuses shell strings", () => {
     assert.equal(meta.ok, false, "metacharacter argv refused");
     const good = run(["node", "--version"], { cwd: dir, env: {} });
     assert.equal(good.ok, true);
+    const withoutPath = run(["node", "--version"], { cwd: dir, env: { PATH: "" } });
+    assert.equal(withoutPath.ok, true, "selected Node runtime must not depend on ambient PATH");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

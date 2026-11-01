@@ -511,7 +511,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
                 templateId: state.templateId,
               });
               if (r.blocked) return { status: "blocked", message: r.blocked, artifacts: [], evidence: [] };
-              if (r.exitCode !== 0) return { status: "failed", message: `suite failed: ${r.stderr.slice(0, 300)}`, artifacts: [], evidence: [] };
+              if (r.exitCode !== 0) return { status: "failed", message: `suite failed: ${(r.stderr || r.stdout).slice(-1000)}`, artifacts: [], evidence: [] };
               journal.append("execute", "info", `template suite passed: ${suite} (trusted=${!r.isolated})`);
               registerArtifact(dagCtx, { taskId: node.id, kind: "workspace-suite", path: suite, summary: `suite ok; trust: ${r.trustReason.slice(0, 120)}` });
               return {

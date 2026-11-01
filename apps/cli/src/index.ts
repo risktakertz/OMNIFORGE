@@ -283,12 +283,13 @@ async function createCmd(c: Ctx, request: string, analysisSource?: { target: str
     : { verdict: "fail" as const, checked: v?.checks.length ?? 0, unmatched: [], nonRunCritical: [], summary: v ? "no original blueprint on the run state — independent verification refused" : "run produced no verification evidence — see omniforge status <run-id> for the failure" };
   const passed = !result.state.error && v?.passed === true && final.verdict === "pass";
   const status = passed ? "passed" : result.state.error && result.state.error !== "dag-failures" ? "blocked" : "failed";
+  const failureDetails = passed ? [] : (buildJobGraphReport(orchestratorConfig(c), result.runId)?.tasks ?? []).filter((task) => task.status === "failed" || task.status === "blocked").map((task) => `${task.taskId}: ${task.message}`);
   if (!passed) process.exitCode = status === "blocked" ? 2 : 1;
   if (!c.json) {
-    process.stdout.write(`\n${passed ? "DONE" : status.toUpperCase()} run=${result.runId}\nworkspace: ${result.state.workspacePath}\nverification: ${v?.passed ? "PASSED" : "FAILED"}\nindependent verifier: ${final.verdict.toUpperCase()} — ${final.summary}\n${passed ? `artifact: ${result.state.artifactPath}` : `reason: ${result.state.error || final.summary}`}\n`);
+    process.stdout.write(redactSecrets(`\n${passed ? "DONE" : status.toUpperCase()} run=${result.runId}\nworkspace: ${result.state.workspacePath}\nverification: ${v?.passed ? "PASSED" : "FAILED"}\nindependent verifier: ${final.verdict.toUpperCase()} — ${final.summary}\n${passed ? `artifact: ${result.state.artifactPath}` : `reason: ${result.state.error || final.summary}\n${failureDetails.join("\n")}`}\n`));
     return;
   }
-  return out(c, { runId: result.runId, status, workspacePath: result.state.workspacePath, verification: v, report: result.report, independent: final }, "");
+  return out(c, { runId: result.runId, status, workspacePath: result.state.workspacePath, verification: v, report: result.report, independent: final, failureDetails }, "");
 }
 
 function inspectCmd(c: Ctx, target: string): Promise<void> {
