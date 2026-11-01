@@ -12,6 +12,27 @@ node scripts/gen-skills.mjs   # regenerate skill packs after editing the table
 
 CI runs the same gates, so a green local `pnpm verify` is the contract.
 
+## Surgical integration operations
+
+`omniforge analyze "structural inventory" --target PATH --rights-evidence TEXT`
+uses the normal DAG and exports `report/ANALYSIS.md` plus hash inventory evidence.
+It does not execute target code. Missing rights evidence blocks before inspection.
+
+Embedding code may call the exported CLI `main(argv, services)` to supply an
+authorized interpreter and CodingExecution service; creation and generalized
+modification share the staged backend engine. See `docs/MODEL_ROUTING.md`.
+Bare credentials never activate paid execution. Composite execution without
+per-deliverable dependency contracts is explicitly blocked.
+
+Required browser verification: `OF_E2E_REQUIRED=1 node tests/e2e/browser.e2e.mjs`
+(PowerShell: set `$env:OF_E2E_REQUIRED='1'` before the command). Browser absence
+must return nonzero. Install the lockfile-matched Chromium through Playwright.
+Do not dispatch heavy integration/security workflows to rerun the normal gates.
+
+Run state, DAG ledgers and checkpoints use atomic persistence. On Windows,
+transient file-lock errors receive a bounded rename retry. Concurrent execution
+of the same run is refused; a dead process's run lock is recovered on resume.
+
 ## CI on push (`.github/workflows/ci.yml`)
 
 The lean CI workflow runs on push and pull requests and executes the same

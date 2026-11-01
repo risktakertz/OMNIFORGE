@@ -54,24 +54,62 @@ sanitization rules as any other external content. `registrySnapshot()` and the
 
 ---
 
-## Model-assisted goal interpretation (v0.2)
+## Explicit model authorization (2026-11-01)
 
-The orchestration graph accepts an optional `modelInterpreter` hook. The CLI
-wires it automatically when `OPENAI_API_KEY` is present (OpenAI-compatible;
-honor `OPENAI_BASE_URL` / `OPENAI_MODEL` for compatible providers):
+Credential presence registers availability only. The CLI does not activate an
+interpreter from a key. Embedders call buildModelInterpreter(env, policy, ledger)
+with an operator-approved ModelCallPolicy, then inject that interpreter and its
+interpreterPolicy through
+the CLI main(argv, services) or createRun(request, services).
 
-- **No credential** → novel/unmatched goals return the honest typed blocker
-  `E_INTENT_NOVEL` / `E_NEEDS_MODEL` with setup instructions. Nothing is
-  fabricated and no silent template mapping happens.
-- **Credential present** → the interpreter requests structured JSON
-  (temperature 0.1, response_format json_object) describing the goal. The
-  result is merged by `mergeModelGoalSpec`, which can fill understanding
-  fields (objective, requirements, deliverables, risks) but can NEVER change
-  policy fields: constraints, privacy, licensing and budget always come from
-  the deterministic side. Requests are truncated to 4000 chars; calls time out
-  at 30s; key values are never logged.
+Every approved route binds approvalId, provider, model, exact endpoint, verified
+cost class, approvedSpend, taskBudget, conservative reservedPerCall and maxCalls.
+Unknown cost is refused. APPROVED_SPEND defaults to zero and caps the policy.
+Paid calls need positive run/task budgets and a positive reservation. Failed
+attempts retain reservations; coding-task reservations persist in model-budget.json
+before execution. Interpretation hooks and coding tasks share the orchestrator's
+durable reservation ledger; even a custom hook is gated before invocation.
+Standalone interpreter users must persist and restore their supplied ledger
+across process restarts. There is no automatic paid fallback.
 
-Status vocabulary applies here too: a provider with a key present is
-`configured`, not `verified` — the first successful structured interpretation
-is the verification event, and quality evaluation remains the operator's
-authorized responsibility.
+The operator must verify provider cost/origin before classifying a route as
+verified-free; a label, credential or compatible URL is not evidence. The tests
+use explicitly injected in-process/fake providers and make no live model claim.
+
+Requests are bounded to 4000 input characters, 1500 output tokens and 30 seconds;
+redirects are refused. Structured output is schema-validated, then resolved into
+the effective intent without changing intake identity, operation or permissions.
+
+The exported agent MVP uses the same pure policy decision function. Live planning
+and editing both require MODEL_APPROVAL_FILE and MODEL_LEDGER_FILE, with the ledger
+outside the writable target; its exclusive lock and conservative reservations
+cover failures and restarts. Missing approval blocks before HTTP, even with a key.
+
+## Coding backend setup and limits
+
+Use a CodingExecution service with backend, policy, bounded scope,
+acceptanceCriteria, expectedOutputs and an optional trusted acceptanceFiles harness.
+Inject it through createRun or the exported CLI main(argv, services). Deterministic
+templates remain preferred when their scope fits. General modifications use the
+same service via modifyWithBackend or CLI main's modify command.
+
+A backend must report verified health, real model capability, executeTask and an
+enforced executionBoundary. The OpenCode adapter accepts an isolatedExecution
+driver plus an authorizeModelCall reservation callback; the host CLI alone is
+blocked. createContainerOpenCodeBackend supplies a concrete Docker/Podman driver
+using a preloaded image, no network, no implicit image pulls and no inherited
+host environment. That image must bundle OpenCode and authorized local inference.
+The version probe reports configured; only a real edit/test smoke earns verified.
+The driver is covered with an injected runtime, not a claimed live-model smoke.
+Before enabling a real route, install the backend and
+model in a constrained runtime, enforce writable mounts/egress/resources and
+cancellation, run its real smoke and independently verify its tests. Installing
+the binary or setting a key alone is insufficient. No such live route was
+verified during this integration.
+
+Generated code without repo-owned provenance needs Docker/Podman and a preloaded
+node:22-bookworm-slim image for independent tests. The runner never pulls images
+implicitly. Workspace trust records live outside generated mounts under the OS
+temporary omniforge-trust directory; exported manifests alone never grant host
+execution. Exported projects remain runnable independently, but importing them
+back does not confer host trust.

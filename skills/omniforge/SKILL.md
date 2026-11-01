@@ -23,11 +23,15 @@ never a wrong product.
   games, APIs, agent MVPs). Novel domains need an authorized model backend.
 - **modify** — regression-safe scoped changes to an existing workspace:
   `set <key> <value>`, `add service "<desc>"`, `add section <id> "<heading>"`,
-  `change text "<from>" to "<to>"`. Anything broader returns E_NEEDS_MODEL
-  with the coding-backend handoff path.
+  `change text "<from>" to "<to>"`. Broader changes use the configured scoped
+  CodingExecution service; without it they return E_NEEDS_MODEL and exit nonzero.
 - **analyze** — authorized audits, behavior specs, comparisons (work blueprints;
   completion does NOT require building an app). REA requires a documented
   rights basis; circumvention targets are refused outright.
+  The CLI currently executes structural inventories:
+  `omniforge analyze "inventory source files" --target PATH --rights-evidence TEXT`.
+  It writes a hash-evidenced report, verifies and exports it without a website.
+  Other analyses need an appropriate authorized probe/backend; no findings are invented.
 - **test / debug / deploy** — checks-only pass, evidence-driven bounded repair,
   approval-gated dry-run-first deployment.
 
@@ -55,6 +59,12 @@ reported separately from deterministic results.
 
 See references/cli.md for commands, references/capabilities.md for the status
 vocabulary, references/security.md for the non-negotiables.
+
+Model credentials never authorize spending. Every interpreter/backend call needs
+an explicit route, verified cost classification, approval and bounded budget.
+Novel work uses a verified, isolated backend in a staged workspace; output is
+applied only after scoped-diff and independent acceptance checks. A host CLI alone
+does not satisfy isolation. See docs/MODEL_ROUTING.md for the service contract.
 
 ## References
 

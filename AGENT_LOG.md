@@ -273,3 +273,45 @@ executable opt-in tests that run the moment the prerequisite exists.
   browser E2E step (real chromium on the runner).** Total: 3 pushes, zero
   re-runs, zero forks, read-only API calls otherwise; docs-only updates ride
   the `**.md`/`docs/**` paths-ignore (no CI minutes).
+
+
+## 2026-11-01 — surgical integration
+
+Base f2fd9b6af988bf844d63faf95f411eba14c4c27a; final executable source
+5bc15138561c57220b2bd34f25ec573f0d444f51. Audit and measured I01–I16 ledger:
+docs/audits/2026-11-01-surgical-integration.md and
+2026-11-01-surgical-handoff.md.
+
+Implemented canonical goal resolution into effective intent/blueprints/routing;
+explicit model policy and shared durable pre-call budgets; actual CodingBackend
+DAG tasks with staging, measured new/untracked diffs and independent acceptance;
+structural analysis CLI/workspaces/reports/export; the same scoped engine for
+general modification/repair; outcome/CLI exit/delivery corrections; detached
+provenance and common workspace command governance. A concrete offline OpenCode
+container driver is contract-tested with an injected runtime, not a live model.
+
+Additional evidenced fixes: Windows gateway path suffixes; actual dashboard
+artifact name; bounded Windows atomic-rename retries; linked CLI entrypoints;
+thrown-outcome reporting and workspace-lease recovery on resume. No assertions
+were removed to conceal failures. Existing templates, skills, U-series and
+LangGraph/checkpoint contracts are retained. The lockfile changed only for the
+verification-to-gateway workspace dependency, without version upgrades.
+
+Measured local validation: pnpm verify PASS (lint, typecheck/build, 254 tests in
+30 files, CLI E2E and actual Chromium); required browser mode PASS; deliberately
+missing browser correctly exits nonzero. Final linked-entrypoint correction:
+affected CLI/integration suite 26/26 PASS. Final outcome/lease changes: lint,
+typecheck/build and 37/37 affected tests PASS; freshly rebuilt cross-process and
+source resume suites 11/11 PASS. The newly added linked-entrypoint test belongs
+to final CI; the earlier full local count is not artificially increased here.
+
+CI baseline independently retrieved: 41203874904 success at 9608efc; its two
+prior failures are historical, not active incidents. No reruns or heavy workflow
+dispatches. New PR-head CI is reported in PR Checks and the final task response.
+No paid model calls, hosting/deployment/payments, forks, force pushes or history
+rewrites. The provided GitHub credential is authentication-only and excluded from
+all repository files, commits, workflow configuration and PR content.
+
+Live model/container smoke remains BLOCKED (no opencode, Docker or Podman on this
+host). Arbitrary behavioral analyses and composite dependency execution without
+explicit contracts remain typed blockers. No universal live-AI/production claim.

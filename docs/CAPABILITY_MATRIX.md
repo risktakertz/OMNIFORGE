@@ -42,8 +42,8 @@ evidence, using the same honest vocabulary.
 
 | Capability | Status | Evidence | Honest limits |
 | --- | --- | --- | --- |
-| Universal GoalSpec contract (§4.1) | verified | `packages/shared-types` GoalSpec schema; `packages/intent-engine/src/goal.ts`; intent-engine tests | model-assisted interpretation activates only with an authorized provider credential |
-| Model-assisted interpretation hook (§4.2) | verified (code path) / BLOCKED_HOST (live) | `mergeModelGoalSpec` policy-immutability tests; `packages/model-router` `buildModelInterpreter` (activates only when a key exists) | no model credentials on this host — live interpretation stays typed-blocked, never faked |
+| Universal GoalSpec contract (§4.1) | verified | GoalSpec schema, policy-preserving merge and validated effective-intent resolver | model enrichment requires explicit approved route/cost/budget policy; credentials alone are insufficient |
+| Model-assisted interpretation hook (§4.2) | verified (code path) / blocked (live) | `mergeModelGoalSpec` policy-immutability tests; `buildModelInterpreter` requires explicit route/cost/budget policy; orchestration reserves before custom hooks | keys alone never activate calls; no live model route verified on this host |
 | Machine-readable capability operations (§4.3/§4.4) | verified | SKILL.md `operations:` + registry `findByOperation()`; router excludes non-matching operations with explicit reasons | untagged skills default conservatively (declared defaults in registry) |
 | Composable primitives (§4.5) | verified | `packages/blueprint-engine/src/primitives.ts` (19 primitives, dep/conflict graph); primitives tests | primitives without deterministic impls report `modelRequired` honestly |
 | Non-code work blueprints (§4.6) | verified | `buildWorkBlueprint` (analysis-report / behavior-spec / test-harness / migration-plan / comparison-study) with executable evidence criteria | unsupported deliverable kinds → typed E_DELIVERABLE_UNSUPPORTED |
@@ -53,7 +53,7 @@ evidence, using the same honest vocabulary.
 | Baseline-manifest change detection (§3.3) | verified | `snapshotManifest`/`diffManifests` — untracked counts, no git repo required | bounded depth 8 / 5000 files |
 | Capability-aware execution routing (§3.5) | verified | `selectExecutionRoute` typed decisions: template / backend / E_NEEDS_MODEL / E_BACKEND_BLOCKED | selection is policy-deterministic; model quality is not evaluable without a model |
 | Container isolation provider (§6.3) | verified (refusal path) / BLOCKED_HOST (real containers) | `runIsolated` composes real docker/podman argv (no-network default, non-root, bounded CPU/mem/pids); typed refusal without runtime | no docker/podman on this host — containerized execution untested live |
-| Script provenance trust boundary (§6.2) | verified | `scriptTrust` (template byte-identity + compose-time provenance manifest); tampered scripts refused or containerized; `runWorkspaceScript` gates every workspace script execution | manifest + files tampered together is detectable only via repo re-verification |
+| Script provenance trust boundary (§6.2) | verified | template byte identity or detached host authority plus compose-time manifest; tampered/forged scripts refused or containerized; tests, local backend and repairs share the command gate | imported/exported manifests alone never confer host trust; real container smoke remains blocked here |
 | repo-push approval gating (§6.5) | verified | ACTION_RISK `repo-push` needsApproval; scoped-approval regression test (incl. path-normalization bypass attempt) | — |
 | Generalized modify (§7.1) | verified | `add service` / `add section` / `change text` transforms + understanding pass + rollback manifest + baseline regression re-verify; typed E_NEEDS_MODEL handoff beyond scope | arbitrary edits still require a model-backed backend |
 | Authorized REA pipeline (§9) | verified (toy fixture) | `planAnalysis` authorization gate + denials (DRM/circumvention, missing evidence, binary-without-sandbox); `analyzePricingFixture` behavior probe → spec → ORIGINAL implementation → equivalence test (piecewise-linear archetype) | one supported archetype today; other targets → typed NEEDS_MODEL |
@@ -61,3 +61,19 @@ evidence, using the same honest vocabulary.
 | Job-graph report (§5.8) | verified | `buildJobGraphReport` + `omniforge status` enrichment (tasks, handoffs, verification, blockers) | — |
 | U01–U18 acceptance harness (§12) | verified | `tests/acceptance/universal.test.ts` — real executed paths (U01/U02/U04/U07/U09/U11/U12/U13/U14/U18) + precise typed blockers (U03/U05/U06/U08/U15/U16/U17) + adversarial additions | live model/toolchain scenarios assert blockers, never completion |
 | Browser E2E required mode (§11.3) | verified | `OF_E2E_REQUIRED=1` flips BLOCKED→exit 1; CI installs chromium (cached) and runs required mode | — |
+
+## Surgical integration — 2026-11-01
+
+Current execution evidence and I01–I16 results are recorded in
+[`audits/2026-11-01-surgical-handoff.md`](audits/2026-11-01-surgical-handoff.md).
+
+| Capability | Status | Evidence and limits |
+| --- | --- | --- |
+| Canonical goal → blueprint → selected backend → DAG → independent acceptance → export | verified with injected file-writing backend through CLI main | Original request, identity and policy preserved; no live model claim |
+| Explicit shared model budget | verified | Default zero spend; custom interpretation hooks and coding share durable pre-call reservations; exported agent planner/editor use the same pure policy decision |
+| Structural analysis CLI | verified | Authorized repo fixture → hash-evidenced original report → work blueprint verification → export, without a website; other methods need appropriate probes |
+| General scoped modification and repair service | verified with injected backend | Same staging, measured diff, rollback-before-application and original-plus-new acceptance contract; original source/harness preserved |
+| Concrete OpenCode offline container driver | configured / blocked live on this host | Actual Docker/Podman invocation implemented; injected-runtime test covers contract; runtime, preloaded local-model image and real smoke are absent |
+| Shared command governance and detached provenance | verified (trusted/refusal paths) | Verification, skill suite, local commands and repairs share the boundary; forged manifests cannot grant host trust; real container execution remains unverified here |
+| Final outcome, CLI exits and resume | verified | Early exits report; failed/blocked DAGs cannot claim success; atomic persistence and run/workspace leases protect resumable work |
+| Composite dependencies | blocked when contracts are missing | Explicit per-deliverable prerequisites, no silent collapse or claim of executed decomposition |

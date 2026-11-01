@@ -91,6 +91,25 @@ with one retracted finding, recorded transparently). Test totals at release:
 | --- | --- | --- |
 | Live OpenCode backend execution (novel code by a real model) | no `opencode` binary, no model credentials | install opencode + authorize a model → `omniforge doctor` shows the smoke gate → opt-in live smoke test runs |
 | Containerized execution of untrusted workspace scripts | no docker/podman | install docker → `runWorkspaceScript` on a tampered script executes inside the container (argv recorded) |
-| Model-assisted interpretation of novel domains (live) | no provider credential | set `OPENAI_API_KEY` → interpreter hook activates automatically; policy fields stay deterministic |
+| Model-assisted interpretation of novel domains (live) | no verified authorized model route | supply explicit ModelCallPolicy + interpreterPolicy and gated interpreter; key presence alone never activates a call |
 | Mobile/desktop/3D builds | no Android SDK / Rust / Godot toolchain | `omniforge doctor` names each absent toolchain; templates stay honestly `blocked` |
 | Real payments, deployment, repository pushes | `APPROVED_SPEND=0`; approval gates (incl. repo-push) | explicit scoped approval required per action+target+run |
+
+## Surgical integration — 2026-11-01
+
+Implemented bridges: validated GoalSpec propagation; explicit model authorization
+with shared durable reservations; backend-driven DAG execution with staged,
+measured, independently verified changes; structural analysis workspaces/reports;
+general modification/repair service; final outcome/report/CLI exit corrections;
+shared workspace execution governance and detached provenance authority.
+
+The concrete offline OpenCode container driver is implemented and tested with an
+injected runtime. Its actual local-model image and live container/model smoke
+remain blocked on this host. Composite execution without dependency contracts
+and arbitrary behavioral analysis remain explicit blockers. No production or
+live-model capability is inferred from the injected tests.
+
+Measured commands, source SHA, I01–I16 ledger, setup steps and residual risks:
+[`audits/2026-11-01-surgical-handoff.md`](audits/2026-11-01-surgical-handoff.md).
+All existing templates and skill packs are retained; no dependency versions were
+upgraded, and default paid spend remains zero.
