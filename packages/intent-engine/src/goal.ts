@@ -16,6 +16,8 @@
  */
 import {
   GoalSpec,
+  ProjectIntent as IntentSchema,
+  ProductKind,
   OmniforgeError,
   type GoalSpec as Goal,
   type ProjectIntent,
@@ -102,6 +104,26 @@ export function mergeModelGoalSpec(base: Goal, modelOutput: unknown): Goal {
   merged.goalId = base.goalId;
   merged.sourceIntentId = base.sourceIntentId;
   return GoalSpec.parse(merged);
+}
+
+/** Validated compatibility view. Identity and permission authority remain original. */
+export function resolveGoalIntent(goal: Goal, original: ProjectIntent): ProjectIntent {
+  const validated = GoalSpec.parse(goal);
+  if (validated.sourceIntentId !== original.id || validated.operation !== original.operation) {
+    throw new OmniforgeError("E_INTENT_UNCLEAR", "goal identity/operation does not match intake");
+  }
+  const kinds = validated.targetProduct.split("+").map((k) => ProductKind.safeParse(k.trim()));
+  const supported = kinds.length > 0 && kinds.every((k) => k.success);
+  return IntentSchema.parse({
+    ...original,
+    productKinds: supported ? kinds.map((k) => k.data) : ["other"],
+    platforms: validated.platforms,
+    explicitRequirements: [...new Set([...original.explicitRequirements, ...validated.functionalRequirements])],
+    inferredAssumptions: validated.assumptions,
+    unknowns: validated.unresolvedQuestions,
+    novelty: validated.interpreter !== "deterministic" && supported ? "known" : original.novelty,
+    interpreter: validated.interpreter === "deterministic" ? "deterministic" : "model-assisted",
+  });
 }
 
 /**

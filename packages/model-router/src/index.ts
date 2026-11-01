@@ -7,6 +7,8 @@
 import { execFile } from "node:child_process";
 import { ModelCapability, type ModelCapability as ModelCap } from "@omniforge/shared-types";
 import { newId, nowIso } from "@omniforge/utils";
+import { authorizeModelCall, type ModelCallPolicy, type ModelCallLedger } from "./policy.js";
+export { authorizeModelCall, reserveModelCall, modelCallDenial, type ModelCallPolicy, type ModelCallLedger } from "./policy.js";
 
 export type TaskProfile = "cheap-summarization" | "architecture" | "code-generation" | "security-review";
 
@@ -135,17 +137,21 @@ export function registrySnapshot(registry: ModelCap[]): string {
  * VALUES into logs; uses fetch with structured JSON output only.
  */
 export function buildModelInterpreter(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  policy?: ModelCallPolicy,
+  ledger: ModelCallLedger = { calls: 0, reserved: 0 }
 ): ((request: string) => Promise<unknown>) | null {
   const openaiKey = env["OPENAI_API_KEY"];
-  if (!openaiKey) return null;
+  if (!openaiKey || !policy) return null;
   const baseUrl = env["OPENAI_BASE_URL"] ?? "https://api.openai.com/v1";
   const model = env["OPENAI_MODEL"] ?? "gpt-4o-mini";
   return async (request: string): Promise<unknown> => {
+    authorizeModelCall({ ...policy, approvedSpend: Math.min(policy.approvedSpend, Number(env.APPROVED_SPEND ?? "0")) }, { provider: "openai", model, endpoint: baseUrl }, ledger);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
     try {
       const res = await fetch(`${baseUrl}/chat/completions`, {
+        redirect: "error",
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -154,6 +160,7 @@ export function buildModelInterpreter(
         body: JSON.stringify({
           model,
           temperature: 0.1,
+          max_tokens: 1500,
           response_format: { type: "json_object" },
           messages: [
             {
