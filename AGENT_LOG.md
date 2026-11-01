@@ -315,3 +315,16 @@ all repository files, commits, workflow configuration and PR content.
 Live model/container smoke remains BLOCKED (no opencode, Docker or Podman on this
 host). Arbitrary behavioral analyses and composite dependency execution without
 explicit contracts remain typed blockers. No universal live-AI/production claim.
+
+
+### First PR CI incident and correction
+
+PR #2 first head 998bf9450067517dacfb99472cc7e91785b2e723:
+run 41298995303 failed only the generated agent-MVP acceptance case (254 pass,
+1 fail); install, lint, typecheck and build passed. No blind rerun was requested.
+Windows Node 22 reproduction passed. The generated command runner now binds Node
+to process.execPath instead of relying on ambient PATH, with a no-PATH assertion;
+failed suite stdout and DAG task details are surfaced for actionable diagnostics.
+Lint/build and Node 22 acceptance+surgical suites passed 22/22. Corrected code:
+dcaaeac3944b1d6b425996189926a771ca3d9596. New exact-head Linux CI is required before
+claiming the incident resolved; its retrieved result is in the final task response.

@@ -1,7 +1,7 @@
 # Surgical integration — measured handoff
 
 Date: 2026-11-01. Base: `f2fd9b6af988bf844d63faf95f411eba14c4c27a`.
-Final code revision: `5bc15138561c57220b2bd34f25ec573f0d444f51`.
+Final code revision: `dcaaeac3944b1d6b425996189926a771ca3d9596`.
 Subsequent documentation commit does not alter executable sources.
 
 ## Result and limits
@@ -36,6 +36,9 @@ except one new workspace dependency edge (three lockfile lines, no upgrades).
 - Final thrown-outcome/lease closure: lint, full typecheck and build PASS;
   affected CLI/orchestration/resume suites **37/37 PASS**. After rebuilding the
   final resume guard, source and compiled cross-process resume suites **11/11 PASS**.
+- After the first PR CI incident: lint/build PASS and affected acceptance plus
+  surgical suites **22/22 PASS under Node 22.23.4** locally. The generated runner
+  binds Node commands to `process.execPath`, including with an empty PATH.
 - `OF_E2E_REQUIRED=1 node tests/e2e/browser.e2e.mjs`: PASS — page, brand, anchors,
   contact form, mobile viewport and screenshot observed on actual Chromium.
 - Required browser mode with an explicitly empty `PLAYWRIGHT_BROWSERS_PATH`:
@@ -86,6 +89,16 @@ already corrected; neither was rerun. The original quoted YAML browser step and
 required Chromium gate are retained. The PR's Checks and final task response
 record the new revision's matching CI result; base CI is not represented as
 proof for the new code. No heavy integration/security workflows were dispatched.
+
+First PR-head run [41298995303](https://github.com/risktakertz/OMNIFORGE/actions/runs/41298995303)
+at `998bf9450067517dacfb99472cc7e91785b2e723` failed one generated agent-MVP
+acceptance case: **254 passed / 1 failed**, with install/lint/typecheck/build
+passing. It was not blindly rerun. The local Windows Node 22 reproduction passed;
+the generated command runner was hardened against Linux/clean-environment Node
+lookup differences and given an explicit empty-PATH assertion. Failure reporting
+now carries actual suite stdout and task details rather than only dag-failures.
+The follow-up source revision is the code SHA above; its matching Linux CI
+conclusion must be retrieved before claiming the incident resolved.
 
 ## Remaining prerequisites and setup
 
