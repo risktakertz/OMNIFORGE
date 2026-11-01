@@ -6,6 +6,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { parse as parseYaml } from "yaml";
 import { parseArgs, slugify, redactSecrets } from "@omniforge/utils";
@@ -22,12 +23,14 @@ import { listWorkspaces, readWorkspaceConfig, exportWorkspace, acquireLease, rel
 import { verifyWorkspace, runProjectTests, classifyFailure, independentFinalVerification } from "@omniforge/verification";
 import { dryRunDeploy, executeDeploy } from "@omniforge/deployment";
 import { createRun, resumeRun, runStatus, buildJobGraphReport } from "@omniforge/orchestration";
+import { modifyWithBackend, type ServiceConfig } from "@omniforge/orchestration";
 import { understandWorkspace, applyDeterministicChange, changeManifest } from "@omniforge/orchestration";
 import { snapshotManifest } from "@omniforge/agent-runtime";
 
 const VERSION = "0.1.0";
 
 interface Ctx {
+  services?: Pick<ServiceConfig, "coding" | "modelInterpreter" | "interpreterPolicy" | "analysisSource">;
   json: boolean;
   repoRoot: string;
   runsRoot: string;
@@ -49,13 +52,13 @@ function ctx(flags: Record<string, string | boolean>): Ctx {
 }
 
 function out(ctx: Ctx, data: unknown, human: string): void {
-  if (ctx.json) process.stdout.write(JSON.stringify(data, null, 2) + "\n");
-  else process.stdout.write(human + "\n");
+  if (ctx.json) process.stdout.write(redactSecrets(JSON.stringify(data, null, 2)) + "\n");
+  else process.stdout.write(redactSecrets(human) + "\n");
 }
 
 function fail(e: unknown): never {
   if (e instanceof OmniforgeError) {
-    process.stderr.write(JSON.stringify({ error: e.code, message: e.message, details: e.details }) + "\n");
+    process.stderr.write(redactSecrets(JSON.stringify({ error: e.code, status: "blocked", message: e.message, details: e.details })) + "\n");
     process.exit(2);
   }
   process.stderr.write(`error: ${redactSecrets(e instanceof Error ? e.message : String(e))}\n`);
@@ -75,6 +78,7 @@ function orchestratorConfig(c: Ctx) {
     // §4.2: model-assisted interpretation activates ONLY when an authorized
     // provider credential exists; otherwise novel goals stay honestly blocked
     ...(buildModelInterpreter() ? { modelInterpreter: buildModelInterpreter()! } : {}),
+    ...c.services,
   };
 }
 
@@ -267,9 +271,9 @@ function planCmd(c: Ctx, request: string): Promise<void> {
   return Promise.resolve();
 }
 
-async function createCmd(c: Ctx, request: string): Promise<void> {
+async function createCmd(c: Ctx, request: string, analysisSource?: { target: string; rightsEvidence: string }): Promise<void> {
   if (!c.json) process.stdout.write(`omniforge create — building: "${request}"\n`);
-  const result = await createRun(request, orchestratorConfig(c));
+  const result = await createRun(request, { ...orchestratorConfig(c), ...(analysisSource ? { analysisSource } : {}) });
   const v = result.state.verification;
   // Independent verification compares the ORIGINAL persisted blueprint
   // against observed evidence — never criteria derived from the results.
@@ -277,11 +281,14 @@ async function createCmd(c: Ctx, request: string): Promise<void> {
   const final = original && v
     ? independentFinalVerification(original, v)
     : { verdict: "fail" as const, checked: v?.checks.length ?? 0, unmatched: [], nonRunCritical: [], summary: v ? "no original blueprint on the run state — independent verification refused" : "run produced no verification evidence — see omniforge status <run-id> for the failure" };
+  const passed = !result.state.error && v?.passed === true && final.verdict === "pass";
+  const status = passed ? "passed" : result.state.error && result.state.error !== "dag-failures" ? "blocked" : "failed";
+  if (!passed) process.exitCode = status === "blocked" ? 2 : 1;
   if (!c.json) {
-    process.stdout.write(`\nDONE run=${result.runId}\nworkspace: ${result.state.workspacePath}\npreview:   open ${join(result.state.workspacePath, "dist", "index.html")} in a browser, or: npx serve ${join(result.state.workspacePath, "dist")}\nexport:    omniforge export ${result.state.workspacePath}\nverification: ${v?.passed ? "PASSED" : "FAILED"} (${v?.checks.map((chk) => `${chk.id}:${chk.status}`).join(" ")})\nindependent verifier: ${final.verdict.toUpperCase()} — ${final.summary}\n`);
+    process.stdout.write(`\n${passed ? "DONE" : status.toUpperCase()} run=${result.runId}\nworkspace: ${result.state.workspacePath}\nverification: ${v?.passed ? "PASSED" : "FAILED"}\nindependent verifier: ${final.verdict.toUpperCase()} — ${final.summary}\n${passed ? `artifact: ${result.state.artifactPath}` : `reason: ${result.state.error || final.summary}`}\n`);
     return;
   }
-  return out(c, { runId: result.runId, workspacePath: result.state.workspacePath, verification: v, report: result.report, independent: final }, "");
+  return out(c, { runId: result.runId, status, workspacePath: result.state.workspacePath, verification: v, report: result.report, independent: final }, "");
 }
 
 function inspectCmd(c: Ctx, target: string): Promise<void> {
@@ -327,6 +334,12 @@ async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> 
       applied = applyDeterministicChange({ workspacePath: p, change, repoRoot: c.repoRoot, gateway });
     } catch (e) {
       if (e instanceof OmniforgeError && e.code === "E_NEEDS_MODEL") {
+        if (c.services?.coding) {
+          releaseLease(p, "cli-modify");
+          const result = await modifyWithBackend({ workspacePath: p, repoRoot: c.repoRoot, runsRoot: c.runsRoot, change, coding: c.services.coding });
+          return out(c, result, `modify complete (coding backend): ${result.changedFiles.join(", ")}\nverification: PASSED against original and added criteria`);
+        }
+        process.exitCode = 2;
         // §3.5/§7.1: honest typed handoff to a coding backend — with the
         // deterministic routes listed so the user can still act today
         return out(
@@ -338,6 +351,7 @@ async function modifyCmd(c: Ctx, target: string, change: string): Promise<void> 
       throw e;
     }
     const after = await verifyWorkspace({ workspacePath: p, blueprint: baseline, backend });
+    if (!after.passed) process.exitCode = 1;
     const manifest = changeManifest(p, beforeManifest);
     const classification = after.passed ? null : classifyFailure(after.failures.join("; "), 1);
     const report = {
@@ -382,6 +396,7 @@ async function testCmd(c: Ctx, target: string): Promise<void> {
     deploymentRequirements: {},
   });
   const result = await verifyWorkspace({ workspacePath: p, blueprint: contract, backend });
+  if (!result.passed) process.exitCode = result.checks.some((check) => check.status === "blocked" || check.status === "not-run") ? 2 : 1;
   return out(c, { projectTests: tests, result }, `tests: ${tests.status} — ${tests.message}\n${result.checks.map((chk) => `${chk.id}:${chk.status}`).join(" ")}`), Promise.resolve();
 }
 
@@ -399,6 +414,7 @@ function statusCmd(c: Ctx, runId: string): Promise<void> {
 
 async function resumeCmd(c: Ctx, runId: string): Promise<void> {
   const result = await resumeRun(runId, orchestratorConfig(c));
+  if (result.state.error || !result.state.verification?.passed) process.exitCode = 2;
   return out(
     c,
     { runId, verification: result.state.verification, workspacePath: result.state.workspacePath, report: result.report },
@@ -447,6 +463,7 @@ Commands:
   models list                   available providers and routing decision
   plan "<request>"              read-only intent, blueprint, routing and cost
   create "<request>"            build a product into projects/ (never publishes)
+  analyze "<request>"           structural inventory; --target PATH --rights-evidence TEXT
   inspect <project-path>        workspace structure and config
   modify <project-path> "..."   regression-safe scoped change (see --help modify)
   test <project-path>           run the project's checks and tests
@@ -457,10 +474,10 @@ Commands:
 
 Learn more: README.md and docs/USER_GUIDE.md. Add --json for machine output.`;
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+export async function main(argv = process.argv.slice(2), services: Pick<ServiceConfig, "coding" | "modelInterpreter" | "interpreterPolicy" | "analysisSource"> = {}): Promise<void> {
   const { positionals, flags } = parseArgs(argv);
   const c = ctx(flags);
+  c.services = services;
   const cmd = positionals[0];
   const rest = positionals.slice(1);
   const request = rest.length > 0 ? rest.join(" ") : "";
@@ -476,6 +493,9 @@ async function main(): Promise<void> {
     case "models": return models(c);
     case "plan": return planCmd(c, request);
     case "create": return createCmd(c, request);
+    case "analyze":
+      if (typeof flags.target !== "string" || typeof flags["rights-evidence"] !== "string") throw new OmniforgeError("E_AUTHORIZATION_REQUIRED", "analyze requires --target PATH and --rights-evidence TEXT before inspection");
+      return createCmd(c, `analyze ${request}`, { target: resolve(flags.target), rightsEvidence: flags["rights-evidence"] });
     case "inspect": return inspectCmd(c, rest[0] ?? ".");
     case "modify":
       if (rest.length < 2) throw new OmniforgeError("E_INTENT_UNCLEAR", 'usage: omniforge modify <project-path> "set business.name Kali Salon" | "add service Catering \"Desc\"" | "add section gallery \"Gallery\"" | "change text \"x\" to \"y\""');
@@ -492,7 +512,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((e) => {
   fail(e);
 });
 void slugify;

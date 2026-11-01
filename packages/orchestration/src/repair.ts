@@ -23,8 +23,11 @@ import { classifyFailure, runProjectTests, verifyWorkspace, type FailureClassifi
 import type { CodingBackend } from "@omniforge/agent-runtime";
 import { loadBlueprint } from "@omniforge/workspace-manager";
 import { runGoverned } from "./dag.js";
+import { executeCodingTask, type CodingExecution } from "./coding.js";
 
 export interface RepairContext {
+  coding?: CodingExecution;
+  runDir?: string;
   workspacePath: string;
   blueprint: ProductBlueprint | null;
   backend: CodingBackend;
@@ -127,7 +130,7 @@ export async function executeRepair(ctx: RepairContext, input: RepairInput): Pro
   // 2) novel fix requires an authorized coding backend with generation
   //    capability — a deterministic local executor cannot write novel fixes,
   //    so report the typed gap honestly (never fake a "fix")
-  if (ctx.backend.id === "local-node") {
+  if (!ctx.coding || !ctx.runDir || !ctx.blueprint) {
     throw new OmniforgeError("E_MODEL_UNAVAILABLE", "novel repair requires a model-backed coding backend (e.g. opencode); none is authorized in this environment — deterministic fixers did not apply", {
       failures: failures.slice(0, 3),
       prerequisite: "install/configure a coding backend, then re-run; the run stays resumable",
@@ -140,11 +143,8 @@ export async function executeRepair(ctx: RepairContext, input: RepairInput): Pro
     `Failures: ${failures.join(" | ").slice(0, 800)}`,
     "Rules: do not delete or weaken tests; do not touch files outside this workspace; explain the change in one line.",
   ].join("\n");
-  const res = await ctx.backend.runTask({ command: task, cwd: ctx.workspacePath, timeoutMs: 180_000 });
-  if (res.exitCode !== 0) {
-    throw new OmniforgeError("E_MODEL_UNAVAILABLE", `coding backend could not produce a fix (exit ${res.exitCode}): ${res.stderr.slice(0, 200)}`, {});
-  }
-  return finishWithRerun(ctx, input, "coding-backend scoped fix", []);
+  const result = await executeCodingTask(ctx.coding, ctx.workspacePath, { ...ctx.blueprint, productBrief: task }, `t:repair:${input.attempt}`, ctx.runDir);
+  return finishWithRerun(ctx, input, "coding-backend scoped fix", result.changedFiles);
 }
 
 async function finishWithRerun(ctx: RepairContext, input: RepairInput, strategy: string, changedFiles: string[]): Promise<RepairResult> {

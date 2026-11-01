@@ -2,9 +2,9 @@
  * OMNIFORGE observability: structured logging with secret redaction and a
  * durable run journal (JSONL) used for progress, status and resume.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { redactSecrets, newId, nowIso } from "@omniforge/utils";
+import { redactSecrets, newId, nowIso, atomicWriteFile } from "@omniforge/utils";
 import { RunEvent, type RunEvent as RunEventT } from "@omniforge/shared-types";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -96,7 +96,8 @@ export class RunJournal {
   }
 
   saveState(state: unknown): void {
-    writeFileSync(join(this.dir, "state.json"), JSON.stringify(state, null, 2), "utf8");
+    const target = join(this.dir, "state.json");
+    atomicWriteFile(target, redactSecrets(JSON.stringify(state, null, 2)));
   }
 
   loadState<T>(): T | null {

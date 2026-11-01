@@ -168,7 +168,7 @@ describe("U-series: executed product paths", () => {
 
   it("U18: interactive data visualization from CSV — dashboard path with real chart + export criteria", () => {
     const { blueprint } = route("Create an interactive data visualization dashboard from this CSV with filters");
-    expect(blueprint.acceptanceCriteria.map((c) => c.evidenceMethod)).toContain("file-exists:dist/roles-logic.js");
+    expect(blueprint.acceptanceCriteria.map((c) => c.evidenceMethod)).toContain("file-exists:dist/dashboard-logic.js");
     expect(JSON.stringify(blueprint.scope.mvp)).toMatch(/SVG trend chart|Exportable CSV/);
   });
 });

@@ -15,8 +15,8 @@
  *    parent links, and falls back to the last valid checkpoint if the latest
  *    file is corrupt or truncated.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync, openSync, closeSync } from "node:fs";
+import { join, resolve, dirname, relative, isAbsolute } from "node:path";
 import {
   Annotation,
   END,
@@ -44,11 +44,11 @@ import {
 import { OmniforgeError } from "@omniforge/shared-types";
 import type { ExecutionPlan } from "@omniforge/task-planner";
 import { planExecution, topoSort } from "@omniforge/task-planner";
-import { newId, nowIso } from "@omniforge/utils";
+import { newId, nowIso, atomicWriteFile } from "@omniforge/utils";
 import { RunJournal, createLogger } from "@omniforge/observability";
 import { parseRequest } from "@omniforge/intent-engine";
-import { buildGoalSpec, decomposeComposite, mergeModelGoalSpec } from "@omniforge/intent-engine";
-import { buildBlueprint } from "@omniforge/blueprint-engine";
+import { buildGoalSpec, decomposeComposite, mergeModelGoalSpec, resolveGoalIntent } from "@omniforge/intent-engine";
+import { buildBlueprint, buildWorkBlueprint } from "@omniforge/blueprint-engine";
 import { StaticKnowledgeProvider } from "@omniforge/research-engine";
 import { CapabilityRegistry } from "@omniforge/capability-registry";
 import { routeIntent } from "@omniforge/skill-router";
@@ -61,7 +61,7 @@ import {
   releaseLease,
   saveBlueprint,
 } from "@omniforge/workspace-manager";
-import { verifyWorkspace } from "@omniforge/verification";
+import { verifyWorkspace, independentFinalVerification } from "@omniforge/verification";
 import { LocalNodeBackend, detectCodingBackend } from "@omniforge/agent-runtime";
 import {
   executeDag,
@@ -76,6 +76,10 @@ import {
 import { executeRepair, signatureOf } from "./repair.js";
 import { composeAgentMvp } from "./agent-mvp.js";
 import { invokeSkill } from "./skills.js";
+import { writeAnalysis, type AnalysisSource } from "./analysis.js";
+import { executionBlueprint, executeCodingTask, type CodingExecution } from "./coding.js";
+import { selectExecutionRoute } from "@omniforge/agent-runtime";
+import { reserveModelCall, type ModelCallPolicy } from "@omniforge/model-router";
 
 /* ------------------------------------------------------------------ */
 /* Graph state                                                         */
@@ -86,6 +90,7 @@ const OFState = Annotation.Root({
   runId: Annotation<string>,
   intent: Annotation<ProjectIntent | null>,
   goalSpec: Annotation<GoalSpec | null>,
+  needsBackend: Annotation<boolean>,
   researchNoteCount: Annotation<number>,
   blueprint: Annotation<ProductBlueprint | null>,
   selection: Annotation<SkillSelection | null>,
@@ -112,6 +117,9 @@ export type OFState = typeof OFState.State;
 export type ModelInterpreter = (request: string) => Promise<unknown>;
 
 export interface ServiceConfig {
+  interpreterPolicy?: ModelCallPolicy;
+  coding?: CodingExecution;
+  analysisSource?: AnalysisSource;
   repoRoot: string;
   runsRoot: string;
   checkpointRoot: string;
@@ -159,9 +167,7 @@ export class FileCheckpointSaver extends BaseCheckpointSaver {
   }
 
   private atomicWrite(file: string, data: string): void {
-    const tmp = `${file}.${newId("tmp")}.tmp`;
-    writeFileSync(tmp, data, "utf8");
-    renameSync(tmp, file);
+    atomicWriteFile(file, data);
   }
 
   private async loadFile(file: string): Promise<CheckpointTuple | undefined> {
@@ -305,15 +311,18 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       // universal GoalSpec (§4.1) — the extensible contract the rest of the
       // pipeline reads; deterministic mapping keeps every field traceable
       let goalSpec = buildGoalSpec(intent);
-      if (intent.novelty === "novel") {
+      if (intent.novelty === "novel" && intent.operation !== "analyze") {
         if (config.modelInterpreter) {
           // §4.2: model-assisted structured extraction for unfamiliar domains.
           // Policy fields are NEVER taken from model output (merge enforces).
           try {
+            const policy = config.interpreterPolicy;
+            reserveModelCall(policy, { provider: policy?.provider ?? "", model: policy?.model ?? "", endpoint: policy?.endpoint ?? "" }, join(config.runsRoot, state.runId, "model-budget.json"));
             const modelFields = await config.modelInterpreter(state.request);
             goalSpec = mergeModelGoalSpec(goalSpec, modelFields);
             journal.append("interpret", "info", `model-assisted interpretation applied (hybrid, confidence=${goalSpec.confidence.toFixed(2)})`);
           } catch (e) {
+            if (e instanceof OmniforgeError) throw e;
             journal.append("interpret", "warn", `model interpretation failed: ${(e as Error).message.slice(0, 140)} — typed blocker stands`);
             throw new OmniforgeError("E_INTENT_NOVEL", `model-assisted interpretation failed: ${(e as Error).message.slice(0, 140)}`, {
               request: state.request.slice(0, 200),
@@ -321,10 +330,10 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
               prerequisite: "verify the model interpreter is reachable and schema-compliant, then re-run",
             });
           }
-        } else {
+        } else if (!config.coding) {
           // honest typed outcome: a novel request must NOT silently become a
           // known template — it needs model-assisted interpretation
-          throw new OmniforgeError("E_INTENT_NOVEL", "request matches no known product capability — needs model-assisted interpretation (NEEDS_MODEL)", {
+          throw new OmniforgeError("E_NEEDS_MODEL", "request matches no known product capability — needs model-assisted interpretation (NEEDS_MODEL)", {
             request: state.request.slice(0, 200),
             hints: intent.domainHints,
             prerequisite: "configure an authorized model provider (see docs/MODEL_ROUTING.md), then re-run",
@@ -337,7 +346,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       if (parts) {
         journal.append("interpret", "info", `composite goal decomposed into ${parts.length} sub-goals: ${parts.map((p) => p.requestedDeliverables[0]).join(" + ")}`);
       }
-      return { intent, goalSpec };
+      return { intent: resolveGoalIntent(goalSpec, intent), goalSpec, needsBackend: intent.operation !== "analyze" && intent.novelty === "novel" };
     })
     .addNode("research", (state: OFState) => {
       const provider = new StaticKnowledgeProvider();
@@ -350,11 +359,35 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       });
     })
     .addNode("specify", (state: OFState) => {
-      const blueprint = buildBlueprint(state.intent!);
+      if (state.goalSpec!.requestedDeliverables.length > 1 || state.intent!.productKinds.length > 1) {
+        throw new OmniforgeError("E_DELIVERABLE_UNSUPPORTED", "composite execution requires explicit dependency contracts for each deliverable; no component will be silently dropped", {
+          deliverables: state.goalSpec!.requestedDeliverables.map((kind) => ({ kind, status: "blocked", prerequisite: "provide per-deliverable acceptance, inputs/outputs and dependency edges" })),
+          productKinds: state.intent!.productKinds,
+        });
+      }
+      let needsBackend = state.needsBackend;
+      if (state.goalSpec!.operation !== "analyze" && !needsBackend) {
+        try { routeIntent(state.intent!, new CapabilityRegistry([join(config.repoRoot, "skills")], join(config.repoRoot, "templates"))); }
+        catch (error) {
+          if (error instanceof OmniforgeError && ["E_SCOPE_EXCEEDS_DETERMINISTIC", "E_INTENT_NOVEL", "E_CAPABILITY_MISSING"].includes(error.code) && config.coding) needsBackend = true;
+          else throw error;
+        }
+      }
+      const blueprint = state.goalSpec!.operation === "analyze" ? buildWorkBlueprint(state.goalSpec!) : needsBackend ? executionBlueprint({ ...state.goalSpec!, functionalRequirements: state.intent!.explicitRequirements }, config.coding, state.request) : buildBlueprint(state.intent!);
       journalOf(state).append("specify", "info", `blueprint ready: ${blueprint.acceptanceCriteria.length} acceptance criteria (original requirements persisted at verify time)`);
-      return { blueprint };
+      return { blueprint, needsBackend };
     })
-    .addNode("select", (state: OFState) => {
+    .addNode("select", async (state: OFState) => {
+      if (state.needsBackend) {
+        const route = selectExecutionRoute({ templateSufficient: false, requiresNovelCode: true, reason: state.goalSpec!.objective }, config.coding?.backend ?? null);
+        if (route.route !== "backend") throw new OmniforgeError("code" in route ? route.code : "E_BACKEND_BLOCKED", route.reason);
+        const health = await route.backend.health();
+        if (health.status !== "verified") throw new OmniforgeError("E_BACKEND_BLOCKED", health.detail);
+        return { templateId: "generator:backend", selection: { intentId: state.intent!.id, selected: [{ capabilityId: route.backend.id, role: "coding", reason: route.reason }], excluded: [], fallback: null, estimatedCost: "explicit task budget", approvalsRequired: [], evidence: [health.detail] } };
+      }
+      if (state.goalSpec!.operation === "analyze") {
+        return { templateId: "generator:analysis", selection: { intentId: state.intent!.id, selected: [{ capabilityId: "skill:research", role: "analysis", reason: "authorized structural inventory" }], excluded: [], fallback: null, estimatedCost: "0 USD", approvalsRequired: [], evidence: [] } };
+      }
       const registry = new CapabilityRegistry([join(config.repoRoot, "skills")], join(config.repoRoot, "templates"));
       const route = routeIntent(state.intent!, registry);
       journalOf(state).append("select", "info", `selected ${route.templateId}; packs=${route.selection.selected.map((s) => s.capabilityId).join(",")}`);
@@ -392,6 +425,17 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       });
       // persist the ORIGINAL acceptance criteria BEFORE implementation
       const bpPath = saveBlueprint(ws.workspacePath, state.blueprint!, gateway);
+      if (state.needsBackend && config.coding?.acceptanceFiles) {
+        for (const [rel, content] of Object.entries(config.coding.acceptanceFiles)) {
+          const path = resolve(ws.workspacePath, rel);
+          const within = relative(ws.workspacePath, path);
+          if (isAbsolute(within) || within.startsWith("..")) throw new OmniforgeError("E_GATEWAY_PATH_ESCAPE", "acceptance fixture path escaped workspace");
+          gateway.checkPath(path);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, content);
+        }
+        recordProvenance(ws.workspacePath, Object.keys(config.coding.acceptanceFiles), gateway);
+      }
       // generator-mode products are composed, not copied from a template
       if (state.templateId === "generator:agent-mvp") {
         const composed = composeAgentMvp(ws.workspacePath, state.intent!, gateway);
@@ -417,6 +461,16 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
       const executors: Record<string, TaskExecutor> = {
         execute: async (node: TaskNode) => {
           const ws = state.workspacePath;
+          if (state.needsBackend) {
+            const result = await executeCodingTask(config.coding!, ws, state.blueprint!, node.id, join(config.runsRoot, state.runId));
+            registerArtifact(dagCtx, { taskId: node.id, kind: "coding-diff", path: result.evidencePath, summary: result.changedFiles.join(", ") });
+            return { status: "passed", message: "scoped backend implementation independently verified", artifacts: [result.evidencePath], evidence: [{ taskId: node.id, commandOrTool: "CodingBackend.executeTask", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [result.evidencePath], summary: result.changedFiles.join(", ") }] };
+          }
+          if (state.goalSpec!.operation === "analyze") {
+            const report = writeAnalysis(config.analysisSource, ws, state.request);
+            registerArtifact(dagCtx, { taskId: node.id, kind: "analysis-report", path: report, summary: "bounded source inventory with hash evidence" });
+            return { status: "passed", message: "analysis report written", artifacts: [report], evidence: [{ taskId: node.id, commandOrTool: "writeAnalysis:read-only-inventory", environment: process.platform, timestamp: nowIso(), exitStatus: "0", artifactPaths: [report], summary: "source inventory, observations and limitations recorded" }] };
+          }
           const gateway = new ToolGateway(defaultContext([ws, join(config.repoRoot, "projects")]));
           gateway.authorize("run", { target: ws });
           if (existsSync(join(ws, "scripts", "render.mjs"))) {
@@ -494,11 +548,11 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           let skillFailure: string | null = null;
           try {
             const registry = new CapabilityRegistry([join(config.repoRoot, "skills")], join(config.repoRoot, "templates"));
-            if (registry.has("skill:testing") && registry.entrypointOf("skill:testing")) {
+            if (!state.needsBackend && state.goalSpec!.operation !== "analyze" && registry.has("skill:testing") && registry.entrypointOf("skill:testing")) {
               const inv = invokeSkill(gateway, config.repoRoot, registry, "skill:testing", { workspacePath: state.workspacePath }, { timeoutMs: 120_000 });
               evidence.push(inv.evidence);
               journal.append("verify", inv.status === "passed" ? "info" : "warn", `skill:testing entrypoint executed (exit ${inv.exitCode}, ${inv.durationMs}ms): ${inv.message.slice(0, 140)}`);
-              if (inv.status === "failed") skillFailure = `skill:testing entrypoint failed: ${inv.message.slice(0, 200)}`;
+              if (inv.status !== "passed") skillFailure = `skill:testing entrypoint ${inv.status}: ${inv.message.slice(0, 200)}`;
             }
           } catch (e) {
             // a broken skill integration is a typed failure, not silence
@@ -506,6 +560,10 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
           }
           if (skillFailure) {
             return { status: "failed" as const, message: skillFailure, artifacts: [], evidence };
+          }
+          const independent = independentFinalVerification(state.blueprint!, result);
+          if (independent.verdict !== "pass") {
+            return { status: "failed" as const, message: independent.summary, artifacts: [], evidence };
           }
           if (result.passed) {
             registerArtifact(dagCtx, { taskId: "t:verify", kind: "verification", schema: "omniforge://schemas/validation-result", summary: `${result.checks.length} checks passed vs original criteria` });
@@ -610,21 +668,22 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         bound,
         dagCtx
       );
-      const verification = dagCtx.env["verification"] ? (JSON.parse(dagCtx.env["verification"]) as ValidationResult) : null;
+      const savedVerification = join(config.runsRoot, state.runId, "verification.json");
+      const verification = dagCtx.env["verification"] ? (JSON.parse(dagCtx.env["verification"]) as ValidationResult) : state.verification ?? (existsSync(savedVerification) ? JSON.parse(readFileSync(savedVerification, "utf8")) as ValidationResult : null);
       // durable job-graph inputs for the §5.8 report (human + JSON)
       const runDir = join(config.runsRoot, state.runId);
       mkdirSync(runDir, { recursive: true });
       writeFileSync(join(runDir, "artifact-ledger.json"), JSON.stringify([...(dagCtx.artifactLedger?.entries() ?? [])].map(([taskId, a]) => ({ taskId, kind: a.kind, path: a.path ?? null, summary: a.summary })), null, 2), "utf8");
-      if (verification) writeFileSync(join(runDir, "verification.json"), JSON.stringify({ passed: verification.passed, checks: verification.checks.map((c) => ({ id: c.id, status: c.status, message: c.message })) }, null, 2), "utf8");
+      if (verification) writeFileSync(join(runDir, "verification.json"), JSON.stringify(verification, null, 2), "utf8");
       const summary = Object.entries(dag.outcomes)
         .map(([id, o]) => `${id}:${o.status}`)
         .join(" ");
       journal.append("execute", dag.allPassed ? "info" : "warn", `DAG ${dag.allPassed ? "completed" : "finished with failures"}: ${summary}`);
       return {
         verification,
-        artifactPath: dagCtx.env["artifactPath"] ?? "",
+        artifactPath: dagCtx.env["artifactPath"] ?? dag.state.tasks["t:package"]?.artifacts[0] ?? "",
         dagSummary: summary,
-        error: dag.allPassed ? "" : "dag-failures",
+        error: dag.allPassed ? "" : Object.values(dag.state.tasks).some((t) => t.status === "blocked") ? "E_BACKEND_BLOCKED" : "dag-failures",
       };
     })
     .addNode("verify", async (state: OFState) => {
@@ -657,6 +716,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
             workspacePath: state.workspacePath,
             blueprint: state.blueprint,
             backend,
+            ...(config.coding ? { coding: config.coding, runDir: join(config.runsRoot, state.runId) } : {}),
             journal: { append: (node, level, message) => journal.append(node, level, message) },
           },
           { verification: state.verification!, attempt: attempts, maxAttempts: 2, previousSignatures: previous }
@@ -715,6 +775,7 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     })
     .addNode("report", (state: OFState) => {
       const journal = journalOf(state);
+      if (state.workspacePath) releaseLease(state.workspacePath, "workspace-manager");
       const summary = [
         `run=${state.runId}`,
         `workspace=${state.workspacePath}`,
@@ -724,7 +785,8 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
         ...(state.error ? [`blocked=${state.error}`] : []),
       ].join(" ");
       journal.append("report", "info", `node:done:report ${summary}`);
-      journal.saveState({ request: state.request, runId: state.runId, status: state.error && state.error !== "dag-failures" ? "blocked" : state.verification?.passed ? "passed" : "failed", workspacePath: state.workspacePath });
+      const status = state.error ? state.error === "dag-failures" ? "failed" : "blocked" : state.blueprint && state.verification && independentFinalVerification(state.blueprint, state.verification).verdict === "pass" ? "passed" : "failed";
+      journal.saveState({ ...state, status, workspacePath: state.workspacePath });
       return { runReport: summary };
     });
 
@@ -740,21 +802,21 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     .addEdge("prepare-workspace", "execute")
     .addEdge("execute", "verify")
     .addConditionalEdges("verify", (state: OFState) => {
-      if (state.error && state.error !== "dag-failures") return END; // typed blocker already recorded
+      if (state.error && state.error !== "dag-failures") return "report";
       if (state.error === "dag-failures") {
         // a DAG task failed. If the workspace defects are repairable
         // (verification has real failures), repair; otherwise the failure is
         // environmental/integration — blocked honestly, never swallowed.
-        if (state.verification && !state.verification.passed) return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
-        return END;
+        if (state.verification && !state.verification.passed) return (state.repairAttempts ?? 0) < 2 ? "repair" : "report";
+        return "report";
       }
       if (state.verification?.passed) return "approve";
-      return (state.repairAttempts ?? 0) < 2 ? "repair" : END;
+      return (state.repairAttempts ?? 0) < 2 ? "repair" : "report";
     })
     .addConditionalEdges("repair", (state: OFState) => {
       // repair that fixed verification cycles back through the DAG; a typed
       // blocker (non-improving/budget/model-unavailable) ends the run
-      if (state.error && state.error !== "dag-failures") return END;
+      if (state.error && state.error !== "dag-failures") return "report";
       return "execute";
     })
     .addEdge("approve", "package")
@@ -779,6 +841,7 @@ const INITIAL_STATE = {
   runId: "",
   intent: null,
   goalSpec: null,
+  needsBackend: false,
   researchNoteCount: 0,
   blueprint: null,
   selection: null,
@@ -794,20 +857,49 @@ const INITIAL_STATE = {
   dagSummary: "",
 };
 
+async function withRunLock<T>(runId: string, config: ServiceConfig, action: () => Promise<T>): Promise<T> {
+  if (!/^run_[a-f0-9]+$/.test(runId)) throw new OmniforgeError("E_INTENT_UNCLEAR", "invalid run identity");
+  const dir = join(config.runsRoot, runId);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "execution.lock");
+  let fd: number;
+  try { fd = openSync(path, "wx"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const lock = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
+    try { process.kill(lock.pid, 0); throw new OmniforgeError("E_WORKSPACE_LOCKED", "run is already executing in another process"); }
+    catch (probeError) {
+      if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") throw probeError;
+    }
+    unlinkSync(path);
+    fd = openSync(path, "wx");
+  }
+  writeFileSync(fd, JSON.stringify({ pid: process.pid, runId }));
+  try { return await action(); }
+  finally { closeSync(fd); unlinkSync(path); }
+}
+
 export async function createRun(request: string, config: ServiceConfig): Promise<RunResult> {
   const graph = buildGraph(config);
   const runId = newId("run");
-  const final = await graph.invoke(
+  let final: OFState;
+  try { final = await withRunLock(runId, config, () => graph.invoke(
     { ...INITIAL_STATE, request, runId },
     { configurable: { thread_id: runId } }
-  );
+  )); } catch (error) {
+    const journal = new RunJournal(config.runsRoot, runId);
+    const code = error instanceof OmniforgeError ? error.code : "E_BACKEND_BLOCKED";
+    journal.append("report", "error", `${code}: ${(error as Error).message}`);
+    journal.saveState({ request, runId, status: "blocked", error: code });
+    throw error;
+  }
   return { runId, report: final.runReport, state: final };
 }
 
 /** Resume an interrupted run from the durable checkpoint store (same thread id). */
 export async function resumeRun(runId: string, config: ServiceConfig): Promise<RunResult> {
   const graph = buildGraph(config);
-  const final = await graph.invoke(null, { configurable: { thread_id: runId } });
+  const final = await withRunLock(runId, config, () => graph.invoke(null, { configurable: { thread_id: runId } }));
   return { runId, report: final.runReport, state: final };
 }
 
@@ -888,4 +980,5 @@ export function buildJobGraphReport(config: ServiceConfig, runId: string): JobGr
     artifactPath: packageTask?.[1]?.artifacts[0] ?? "",
   };
 }
-export { understandWorkspace, applyDeterministicChange, changeManifest } from "./modify.js";
+export { understandWorkspace, applyDeterministicChange, changeManifest, modifyWithBackend } from "./modify.js";
+export { executeCodingTask, type CodingExecution } from "./coding.js";

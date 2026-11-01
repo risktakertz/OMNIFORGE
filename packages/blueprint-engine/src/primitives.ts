@@ -23,7 +23,7 @@ export interface Primitive {
 export const PRIMITIVES: Primitive[] = [
   { id: "ui", description: "Responsive user interface layer", requires: [], conflicts: [], deterministicImpl: "static-business/commerce-lite/booking-lite/dashboard-lite renderers" },
   { id: "authentication", description: "User identity and sessions", requires: ["storage"], conflicts: [], deterministicImpl: null, needsModelWhenAbsent: true },
-  { id: "authorization", description: "Roles, permissions, tenant isolation", requires: ["authentication", "storage"], conflicts: [], deterministicImpl: "roles-logic.js (demo role boundary)" },
+  { id: "authorization", description: "Roles, permissions, tenant isolation", requires: ["authentication", "storage"], conflicts: [], deterministicImpl: "dashboard-logic.js (demo role boundary)" },
   { id: "storage", description: "Persistent data (local or DB)", requires: [], conflicts: [], deterministicImpl: "localStorage / in-memory stores" },
   { id: "api", description: "Typed HTTP interface", requires: [], conflicts: [], deterministicImpl: "node template (Zod-validated contracts)" },
   { id: "background-jobs", description: "Deferred/scheduled work", requires: ["storage"], conflicts: [], deterministicImpl: null, needsModelWhenAbsent: true },
