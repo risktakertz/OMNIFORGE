@@ -4,7 +4,7 @@
  * Real operations, structured JSON mode (--json) and readable beginner mode.
  * Every command runs through the deterministic policy gateway.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -512,7 +512,7 @@ export async function main(argv = process.argv.slice(2), services: Pick<ServiceC
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((e) => {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) main().catch((e) => {
   fail(e);
 });
 void slugify;

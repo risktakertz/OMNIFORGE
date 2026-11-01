@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,16 @@ import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 describe("surgical integration", () => {
+  it("the CLI still executes through a linked package entrypoint", () => {
+    const root = mkdtempSync(join(tmpdir(), "of-cli-link-"));
+    try {
+      const linked = join(root, "cli");
+      symlinkSync(join(repoRoot, "apps", "cli", "dist"), linked, process.platform === "win32" ? "junction" : "dir");
+      const result = spawnSync(process.execPath, [join(linked, "index.js"), "help"], { encoding: "utf8" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Commands:");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("orchestration authorizes interpretation before invoking a custom model hook", async () => {
     const root = mkdtempSync(join(tmpdir(), "of-hook-budget-"));
     let invoked = false;
