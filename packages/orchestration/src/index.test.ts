@@ -61,6 +61,10 @@ describe("orchestration (LangGraph + durable checkpoints)", () => {
       }
     }
     expect(runId).toBeTruthy();
+    const { readFileSync } = await import("node:fs");
+    const interrupted = JSON.parse(readFileSync(join(runsRoot, runId!, "state.json"), "utf8")) as { status: string; workspacePath: string };
+    expect(interrupted.status).toBe("failed");
+    expect(existsSync(join(interrupted.workspacePath, ".omniforge-lock.json"))).toBe(false);
     const before = runStatus(config, runId!);
     expect((before.state as { hasCheckpoint: boolean }).hasCheckpoint).toBe(true);
 

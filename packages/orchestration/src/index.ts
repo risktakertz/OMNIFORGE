@@ -59,6 +59,7 @@ import {
   readWorkspaceConfig,
   recordProvenance,
   releaseLease,
+  acquireLease,
   saveBlueprint,
 } from "@omniforge/workspace-manager";
 import { verifyWorkspace, independentFinalVerification } from "@omniforge/verification";
@@ -407,6 +408,9 @@ export function buildGraph(config: ServiceConfig, checkpointer?: MemorySaver | F
     .addNode("prepare-workspace", (state: OFState) => {
       // idempotent on resume: an existing workspace is reused, never duplicated
       if (state.workspacePath && existsSync(state.workspacePath)) {
+        const leaseFile = join(state.workspacePath, ".omniforge-lock.json");
+        if (!existsSync(leaseFile)) acquireLease(state.workspacePath, "workspace-manager");
+        else if ((JSON.parse(readFileSync(leaseFile, "utf8")) as { holder?: string }).holder !== "workspace-manager") throw new OmniforgeError("E_WORKSPACE_LOCKED", "resumable workspace is leased by another operation");
         journalOf(state).append("prepare-workspace", "info", `reusing existing workspace ${state.workspacePath}`);
         // ensure the ORIGINAL blueprint is persisted (legacy workspace repair)
         const ws = { workspacePath: state.workspacePath };
@@ -867,7 +871,7 @@ async function withRunLock<T>(runId: string, config: ServiceConfig, action: () =
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const lock = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
-    try { process.kill(lock.pid, 0); throw new OmniforgeError("E_WORKSPACE_LOCKED", "run is already executing in another process"); }
+    try { process.kill(lock.pid, 0); throw new OmniforgeError("E_WORKSPACE_LOCKED", "run is already executing in another process", { runLock: true }); }
     catch (probeError) {
       if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") throw probeError;
     }
@@ -887,10 +891,7 @@ export async function createRun(request: string, config: ServiceConfig): Promise
     { ...INITIAL_STATE, request, runId },
     { configurable: { thread_id: runId } }
   )); } catch (error) {
-    const journal = new RunJournal(config.runsRoot, runId);
-    const code = error instanceof OmniforgeError ? error.code : "E_BACKEND_BLOCKED";
-    journal.append("report", "error", `${code}: ${(error as Error).message}`);
-    journal.saveState({ request, runId, status: "blocked", error: code });
+    await recordRunException(graph, runId, config, error, request);
     throw error;
   }
   return { runId, report: final.runReport, state: final };
@@ -899,8 +900,37 @@ export async function createRun(request: string, config: ServiceConfig): Promise
 /** Resume an interrupted run from the durable checkpoint store (same thread id). */
 export async function resumeRun(runId: string, config: ServiceConfig): Promise<RunResult> {
   const graph = buildGraph(config);
-  const final = await withRunLock(runId, config, () => graph.invoke(null, { configurable: { thread_id: runId } }));
-  return { runId, report: final.runReport, state: final };
+  try {
+    const final = await withRunLock(runId, config, async () => {
+      const snapshot = await graph.getState({ configurable: { thread_id: runId } });
+      const saved = snapshot.values as Partial<OFState>;
+      if (saved?.workspacePath && existsSync(saved.workspacePath)) {
+        const lease = join(saved.workspacePath, ".omniforge-lock.json");
+        if (!existsSync(lease)) acquireLease(saved.workspacePath, "workspace-manager");
+        else if ((JSON.parse(readFileSync(lease, "utf8")) as { holder?: string }).holder !== "workspace-manager") throw new OmniforgeError("E_WORKSPACE_LOCKED", "resumable workspace is leased by another operation");
+      }
+      const result = await graph.invoke(null, { configurable: { thread_id: runId } });
+      if (result.workspacePath) releaseLease(result.workspacePath, "workspace-manager");
+      return result;
+    });
+    return { runId, report: final.runReport, state: final };
+  } catch (error) { await recordRunException(graph, runId, config, error); throw error; }
+}
+
+async function recordRunException(graph: ReturnType<typeof buildGraph>, runId: string, config: ServiceConfig, error: unknown, request = ""): Promise<void> {
+  // A rejected concurrent resume must not overwrite the active run's outcome.
+  if (!/^run_[a-f0-9]+$/.test(runId) || (error instanceof OmniforgeError && error.code === "E_WORKSPACE_LOCKED" && error.details["runLock"] === true)) return;
+  let partial: Partial<OFState> = {};
+  try { partial = ((await graph.getState({ configurable: { thread_id: runId } })).values ?? {}) as Partial<OFState>; } catch { /* journal still records the exception if checkpoint retrieval fails */ }
+  const journal = new RunJournal(config.runsRoot, runId);
+  const code = error instanceof OmniforgeError ? error.code : "E_VERIFY_FAILED";
+  const status = ["E_VERIFY_FAILED", "E_GATEWAY_DENIED", "E_GATEWAY_PATH_ESCAPE"].includes(code) ? "failed" : "blocked";
+  journal.append("report", "error", `${code}: ${error instanceof Error ? error.message : String(error)}`);
+  if (partial.workspacePath) {
+    try { releaseLease(partial.workspacePath, "workspace-manager"); }
+    catch { journal.append("report", "warn", "workspace lease belongs to another operation; left intact"); }
+  }
+  journal.saveState({ ...partial, request: partial.request ?? request, runId, status, error: code });
 }
 
 export function runStatus(config: ServiceConfig, runId: string): { runId: string; journal: Array<{ node: string; message: string; at: string }>; state: unknown } {
