@@ -12,9 +12,9 @@
  *  - The independent final verifier compares the ORIGINAL blueprint criteria
  *    against observed checks; implementer status strings are never trusted.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, realpathSync, lstatSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, relative, resolve, isAbsolute } from "node:path";
 import {
   CheckResult,
   ValidationResult,
@@ -26,6 +26,7 @@ import {
 } from "@omniforge/shared-types";
 import { looksLikeSecret, nowIso, newId } from "@omniforge/utils";
 import type { CodingBackend } from "@omniforge/agent-runtime";
+import { runWorkspaceCommand } from "@omniforge/tool-gateway";
 
 export const VERIFICATION_CONTRACT_VERSION = "2.0.0";
 
@@ -56,7 +57,7 @@ function listFiles(dir: string, base = ""): string[] {
   for (const e of readdirSync(dir)) {
     const full = join(dir, e);
     const rel = base ? `${base}/${e}` : e;
-    if (statSync(full, { throwIfNoEntry: false })?.isDirectory()) out.push(...listFiles(full, rel));
+    if (lstatSync(full, { throwIfNoEntry: false })?.isDirectory()) out.push(...listFiles(full, rel));
     else out.push(rel);
   }
   return out;
@@ -114,24 +115,22 @@ function runArgs(
   args: string[],
   label: string
 ): { status: Check["status"]; message: string; command: string } {
-  const r = spawnSync(cmd, args, {
-    cwd,
-    encoding: "utf8",
-    timeout: 90_000,
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 4 * 1024 * 1024,
-  });
+  const cfg = readSafe(join(cwd, "project.config.json"));
+  const templateId = cfg ? String((JSON.parse(cfg) as { templateId?: string }).templateId ?? "") : "";
+  const r = runWorkspaceCommand({ workspacePath: cwd, argv: [cmd, ...args], templateId, templateRoot: fileURLToPath(new URL("../../../templates", import.meta.url)) });
+  if (r.blocked) return { status: "blocked", message: r.blocked, command: label };
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-  if (r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+  if (r.timedOut) {
     return { status: "failed", message: `tests timed out after 90s (${label})`, command: label };
   }
-  if (r.status === 0) {
+  if (r.exitCode === 0 && /\bBLOCKED\b/.test(out)) return { status: "blocked", message: `test reported BLOCKED (${label})`, command: label };
+  if (r.exitCode === 0) {
     return { status: "passed", message: `tests passed (${label})`, command: label };
   }
   const tail = out.split("\n").filter(Boolean).slice(-8).join(" | ").slice(0, 600);
   return {
     status: "failed",
-    message: `tests failed exit=${r.status ?? "signal"} (${label}): ${tail}`,
+    message: `tests failed exit=${r.exitCode ?? "signal"} (${label}): ${tail}`,
     command: label,
   };
 }
@@ -157,6 +156,7 @@ function noSecrets(workspacePath: string): { status: Check["status"]; message: s
   const offenders: string[] = [];
   for (const rel of listFiles(workspacePath)) {
     if (/(^|\/)(node_modules|dist-export)(\/|$)/.test(rel)) continue;
+    if (lstatSync(join(workspacePath, rel)).isSymbolicLink()) { offenders.push(rel); continue; }
     const text = readSafe(join(workspacePath, rel));
     if (text && looksLikeSecret(text)) offenders.push(rel);
   }
@@ -175,6 +175,15 @@ function structureCheck(workspacePath: string): { status: Check["status"]; messa
 
 const NON_RUN: Array<Check["status"]> = ["skipped", "blocked", "not-run"];
 
+function evidenceFile(workspace: string, rel: string): string | null {
+  const path = resolve(workspace, rel);
+  const within = relative(resolve(workspace), path);
+  if (isAbsolute(within) || within === ".." || within.startsWith("..\\") || within.startsWith("../")) return null;
+  if (!existsSync(path)) return null;
+  const actual = relative(realpathSync(workspace), realpathSync(path));
+  return isAbsolute(actual) || actual === ".." || actual.startsWith("..\\") || actual.startsWith("../") ? null : path;
+}
+
 export async function verifyWorkspace(opts: VerifyOptions): Promise<Result> {
   const { workspacePath, blueprint } = opts;
   const checks: Check[] = [];
@@ -185,12 +194,17 @@ export async function verifyWorkspace(opts: VerifyOptions): Promise<Result> {
     let result: { status: Check["status"]; message: string };
     if (method.startsWith("file-exists:")) {
       const rel = method.slice("file-exists:".length);
-      result = existsSync(join(workspacePath, rel))
+      const path = evidenceFile(workspacePath, rel);
+      result = path && statSync(path).isFile()
         ? { status: "passed", message: `${rel} exists` }
         : { status: "failed", message: `${rel} missing` };
     } else if (method.startsWith("file-contains:")) {
-      const [, rel, needle] = method.split(":");
-      const content = readSafe(join(workspacePath, rel ?? ""));
+      const rest = method.slice("file-contains:".length);
+      const split = rest.indexOf(":");
+      const rel = rest.slice(0, split);
+      const needle = rest.slice(split + 1);
+      const path = split > 0 ? evidenceFile(workspacePath, rel) : null;
+      const content = path ? readSafe(path) : null;
       result =
         content && needle && content.toLowerCase().includes(needle.toLowerCase())
           ? { status: "passed", message: `${rel} contains "${needle}"` }

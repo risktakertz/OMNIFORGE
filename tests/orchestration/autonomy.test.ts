@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { CapabilityRegistry } from "@omniforge/capability-registry";
 import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
 import { invokeSkill } from "@omniforge/orchestration";
+import { recordProvenance } from "@omniforge/workspace-manager";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -54,6 +55,7 @@ describe("C3: executable skill registry", () => {
       writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", type: "module", scripts: { test: "node --test ok.test.mjs" } }, null, 2));
       writeFileSync(join(ws, "ok.test.mjs"), "import test from 'node:test';\ntest('ok', () => {});\n", "utf8");
       const gateway = new ToolGateway(defaultContext([ws, repoRoot]));
+      recordProvenance(ws, ["package.json", "ok.test.mjs"], gateway);
       const inv = invokeSkill(gateway, repoRoot, reg, "skill:testing", { workspacePath: ws }, { timeoutMs: 60_000 });
       expect(inv.status).toBe("passed");
       expect(inv.exitCode).toBe(0);
@@ -70,6 +72,7 @@ describe("C3: executable skill registry", () => {
       writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", type: "module", scripts: { test: "node --test bad.test.mjs" } }, null, 2));
       writeFileSync(join(ws, "bad.test.mjs"), "import test from 'node:test';\nimport assert from 'node:assert';\ntest('nope', () => { assert.equal(1, 2); });\n", "utf8");
       const gateway = new ToolGateway(defaultContext([ws, repoRoot]));
+      recordProvenance(ws, ["package.json", "bad.test.mjs"], gateway);
       const inv = invokeSkill(gateway, repoRoot, reg, "skill:testing", { workspacePath: ws }, { timeoutMs: 60_000 });
       expect(inv.status).toBe("failed");
       expect(inv.exitCode).not.toBe(0);

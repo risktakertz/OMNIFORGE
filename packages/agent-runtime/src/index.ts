@@ -15,12 +15,12 @@
  *    task succeeds — doctor/health evidence, never assumptions.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { OmniforgeError, type ModelCapability } from "@omniforge/shared-types";
 import { redactSecrets } from "@omniforge/utils";
-import { ToolGateway } from "@omniforge/tool-gateway";
+import { ToolGateway, runWorkspaceCommand, runIsolated } from "@omniforge/tool-gateway";
 
 /* ------------------------------------------------------------------ */
 /* Shared types                                                        */
@@ -108,6 +108,8 @@ export interface BackendFeatureFlags {
 }
 
 export interface CodingBackend {
+  /** Adapter-enforced write/process boundary; absence blocks novel execution. */
+  executionBoundary?(): { isolated: boolean; detail: string };
   readonly id: string;
   readonly available: boolean;
   readonly availabilityNote: string;
@@ -323,6 +325,13 @@ export class LocalNodeBackend implements CodingBackend {
     // policy denial fails LOUD (typed error) — escapes/injection/sandbox gaps
     // must never be surfaced as a mere non-zero exit
     this.gateway.authorizeExec(argv[0]!, argv.slice(1), { cwd: spec.cwd, tool: "run" });
+    const versionProbe = argv.length === 2 && ["node", "git"].includes(argv[0]!) && argv[1] === "--version";
+    if (!versionProbe) {
+      const started = Date.now();
+      const result = runWorkspaceCommand({ workspacePath: spec.cwd, argv, timeoutMs: spec.timeoutMs ?? 120_000 });
+      if (result.blocked) throw new OmniforgeError("E_SANDBOX_UNAVAILABLE", result.blocked);
+      return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, durationMs: Date.now() - started, timedOut: result.timedOut, signal: null };
+    }
     const timeoutMs = spec.timeoutMs ?? 120_000;
     const max = spec.maxBufferBytes ?? this.opts.maxBufferBytes ?? 512 * 1024;
     const started = Date.now();
@@ -417,7 +426,7 @@ export class OpenCodeBackend implements CodingBackend {
   constructor(
     private readonly gateway: ToolGateway,
     private readonly cliPath: string | null,
-    private readonly opts: { model?: string; maxBufferBytes?: number } = {}
+    private readonly opts: { model?: string; maxBufferBytes?: number; authorizeModelCall?: () => void; isolatedExecution?: (spec: AgentTaskSpec, args: string[]) => Promise<BackendResult>; versionProbe?: () => Promise<BackendResult> } = {}
   ) {
     this.available = cliPath !== null;
     this.availabilityNote = cliPath
@@ -441,11 +450,15 @@ export class OpenCodeBackend implements CodingBackend {
     ];
   }
 
+  executionBoundary(): { isolated: boolean; detail: string } {
+    return { isolated: Boolean(this.opts.isolatedExecution), detail: this.opts.isolatedExecution ? "operator-supplied enforced isolated executor" : "host OpenCode CLI is not an enforced isolation boundary" };
+  }
+
   features(): BackendFeatureFlags {
     return {
       prepare: true,
       streamEvents: false, // opencode run is non-interactive; no stable event stream contract
-      cancel: true,
+      cancel: false, // isolated executor owns termination; no host child is tracked
       collectDiff: true,
       collectEvidence: true,
       modelBacked: true,
@@ -474,6 +487,12 @@ export class OpenCodeBackend implements CodingBackend {
   async health(): Promise<BackendHealth> {
     if (!this.available) return { status: "unavailable", detail: this.availabilityNote };
     if (this.smokeVerified) return { status: "verified", detail: `opencode smoke task passed (${this.cliPath})` };
+    if (this.opts.versionProbe) {
+      try {
+        const result = await this.opts.versionProbe();
+        return result.exitCode === 0 ? { status: "configured", detail: "container OpenCode version probe passed; authorized model smoke still required" } : { status: "blocked", detail: result.stderr.slice(0, 200) || "container version probe failed; preload the configured image" };
+      } catch (error) { return { status: "unavailable", detail: redactSecrets((error as Error).message) }; }
+    }
     // CLI present: run the harmless version probe now; full smoke on demand
     const probe = spawnSync(this.cliPath!, ["--version"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
     if (probe.status !== 0) {
@@ -482,57 +501,9 @@ export class OpenCodeBackend implements CodingBackend {
     return { status: "configured", detail: `opencode ${String(probe.stdout ?? "").trim() || "?"} — run the smoke task to verify agent execution` };
   }
 
-  async runTask(spec: RunTaskSpec): Promise<BackendResult> {
-    if (!this.available) {
-      throw new OmniforgeError("E_BACKEND_UNAVAILABLE", this.availabilityNote);
-    }
-    this.gateway.authorize("run", { target: spec.cwd, command: redactSecrets(spec.command) });
-    const timeoutMs = spec.timeoutMs ?? 120_000;
-    const max = spec.maxBufferBytes ?? this.opts.maxBufferBytes ?? 512 * 1024;
-    const started = Date.now();
-    return await new Promise<BackendResult>((resolveP) => {
-      const child = spawn(this.cliPath!, spec.command.split(/\s+/), {
-        cwd: spec.cwd,
-        env: { ...process.env, ...spec.env },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, timeoutMs);
-      child.stdout?.on("data", (d: Buffer) => {
-        if (stdout.length < max) stdout += d.toString();
-      });
-      child.stderr?.on("data", (d: Buffer) => {
-        if (stderr.length < max) stderr += d.toString();
-      });
-      child.on("close", (code, signal) => {
-        clearTimeout(timer);
-        this.lastResult = {
-          exitCode: code,
-          stdout: redactSecrets(stdout.slice(0, max)),
-          stderr: redactSecrets(stderr.slice(0, max)),
-          durationMs: Date.now() - started,
-          timedOut,
-          signal: signal ?? null,
-        };
-        resolveP(this.lastResult);
-      });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolveP({
-          exitCode: -1,
-          stdout: "",
-          stderr: redactSecrets(err.message),
-          durationMs: Date.now() - started,
-          timedOut: false,
-          signal: null,
-        });
-      });
-    });
+  async runTask(_spec: RunTaskSpec): Promise<BackendResult> {
+    if (!this.available) throw new OmniforgeError("E_BACKEND_UNAVAILABLE", this.availabilityNote);
+    throw new OmniforgeError("E_BACKEND_BLOCKED", "OpenCode requires a scoped executeTask and isolated executor; bare commands cannot enforce the task contract");
   }
 
   /**
@@ -555,58 +526,19 @@ export class OpenCodeBackend implements CodingBackend {
         raw: null,
       };
     }
+    if (!this.opts.authorizeModelCall) return { status: "blocked", detail: "E_BUDGET_EXCEEDED: explicit model-call authorization required", changedFiles: [], scopeViolations: [], raw: null };
+    if (!this.opts.model || (spec.model && spec.model !== this.opts.model)) return { status: "blocked", detail: "E_BUDGET_EXCEEDED: task model must match the explicitly configured route", changedFiles: [], scopeViolations: [], raw: null };
+    if (!spec.fileScope?.writable.length) return { status: "blocked", detail: "E_GATEWAY_DENIED: explicit writable scope required", changedFiles: [], scopeViolations: [], raw: null };
+    // Host CLI execution cannot enforce model-written file/process boundaries.
+    // Refuse until an isolated adapter has been supplied; never infer safety from CLI presence.
+    if (!this.opts.isolatedExecution) return { status: "blocked", detail: "E_SANDBOX_UNAVAILABLE: OpenCode host execution lacks an enforced scoped runtime", changedFiles: [], scopeViolations: [], raw: null };
+    this.opts.authorizeModelCall();
     this.gateway.authorize("run", { target: spec.cwd, command: redactSecrets(`opencode run ${spec.instruction.slice(0, 80)}`) });
     const before = snapshotManifest(spec.cwd);
     const args = ["run"];
-    if (spec.model) args.push("--model", spec.model);
-    args.push(spec.instruction);
-    const started = Date.now();
-    const timeoutMs = spec.timeoutMs ?? 300_000;
-    const raw = await new Promise<BackendResult>((resolveP) => {
-      const child = spawn(this.cliPath!, args, {
-        cwd: spec.cwd,
-        env: { ...process.env },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      this.running.set(spec.taskId, child);
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, timeoutMs);
-      child.stdout?.on("data", (d: Buffer) => {
-        if (stdout.length < 400_000) stdout += d.toString();
-      });
-      child.stderr?.on("data", (d: Buffer) => {
-        if (stderr.length < 200_000) stderr += d.toString();
-      });
-      child.on("close", (code, signal) => {
-        clearTimeout(timer);
-        this.running.delete(spec.taskId);
-        resolveP({
-          exitCode: code,
-          stdout: redactSecrets(stdout.slice(0, 400_000)),
-          stderr: redactSecrets(stderr.slice(0, 200_000)),
-          durationMs: Date.now() - started,
-          timedOut,
-          signal: signal ?? null,
-        });
-      });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        this.running.delete(spec.taskId);
-        resolveP({
-          exitCode: -1,
-          stdout: "",
-          stderr: redactSecrets(err.message),
-          durationMs: Date.now() - started,
-          timedOut: false,
-          signal: null,
-        });
-      });
-    });
+    args.push("--model", this.opts.model);
+    args.push(JSON.stringify({ objective: spec.instruction, context: spec.projectContext ?? "", fileScope: spec.fileScope, acceptanceCriteria: spec.acceptanceCriteria ?? [], allowedTools: spec.allowedTools ?? [], expectedArtifacts: spec.expectedArtifacts ?? [], timeoutMs: spec.timeoutMs ?? 300_000 }));
+    const raw = await this.opts.isolatedExecution(spec, args);
     this.lastResult = raw;
     const after = snapshotManifest(spec.cwd);
     const diff = diffManifests(before, after);
@@ -692,8 +624,9 @@ export class OpenCodeBackend implements CodingBackend {
         expectedArtifacts: ["math.js"],
         risk: "low",
       });
-      const verify = spawnSync("node", ["--test", "math.test.mjs"], { cwd: ws, encoding: "utf8", timeout: 30_000 });
-      const verified = verify.status === 0 && res.changedFiles.includes("math.js") && res.scopeViolations.length === 0;
+      if (res.status !== "passed") return res;
+      const verify = runWorkspaceCommand({ workspacePath: ws, argv: ["node", "--test", "math.test.mjs"], timeoutMs: 30_000 });
+      const verified = !verify.blocked && verify.exitCode === 0 && res.changedFiles.includes("math.js") && res.scopeViolations.length === 0;
       // a real observed smoke pass is the ONLY path to 'verified' (never assumed)
       if (verified) this.smokeVerified = true;
       return {
@@ -701,7 +634,7 @@ export class OpenCodeBackend implements CodingBackend {
         status: verified ? "passed" : "failed",
         detail: verified
           ? "smoke passed: real file edit + passing test observed"
-          : `smoke failed: changedFiles=${res.changedFiles.join(",") || "none"}, test exit=${verify.status}`,
+          : `smoke failed: changedFiles=${res.changedFiles.join(",") || "none"}, test exit=${verify.exitCode}; ${verify.blocked ?? ""}`,
       };
     } finally {
       if (owned) rmSync(ws, { recursive: true, force: true });
@@ -785,4 +718,38 @@ export function detectCodingBackend(gateway: ToolGateway): CodingBackend {
 
 export async function detectOpenCode(): Promise<string | null> {
   return probeBinary("opencode");
+}
+
+/** Concrete offline container route. Image must bundle OpenCode and authorized local inference. */
+export function createContainerOpenCodeBackend(gateway: ToolGateway, opts: {
+  image: string;
+  model: string;
+  authorizeModelCall: () => void;
+  /** Explicit runtime configuration only; host environment is never inherited. */
+  env?: Record<string, string>;
+}): OpenCodeBackend {
+  if (!opts.image || /\s/.test(opts.image)) throw new OmniforgeError("E_BACKEND_BLOCKED", "a preloaded container image reference is required");
+  const execute = async (spec: AgentTaskSpec, args: string[]): Promise<BackendResult> => {
+    if (!/^(\.coding-task-|of-opencode-smoke-|of-container-probe-)/.test(basename(spec.cwd))) throw new OmniforgeError("E_GATEWAY_DENIED", "container execution requires a disposable task workspace");
+    // Only a disposable task workspace is made writable for the non-root container user.
+    const makeWritable = (path: string): void => {
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) throw new OmniforgeError("E_GATEWAY_PATH_ESCAPE", "container inputs must not contain symlinks");
+      chmodSync(path, stat.isDirectory() ? 0o777 : 0o666);
+      if (stat.isDirectory()) for (const name of readdirSync(path)) makeWritable(join(path, name));
+    };
+    makeWritable(spec.cwd);
+    const result = runIsolated({ image: opts.image, argv: ["opencode", ...args], workdir: spec.cwd, readOnlyMounts: [], env: opts.env ?? {}, timeoutMs: spec.timeoutMs ?? 120_000, allowNetwork: false });
+    return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, timedOut: result.timedOut, signal: null };
+  };
+  const backend = new OpenCodeBackend(gateway, "container:opencode", {
+    model: opts.model, authorizeModelCall: opts.authorizeModelCall, isolatedExecution: execute,
+    versionProbe: async () => {
+      const root = mkdtempSync(join(tmpdir(), "of-container-probe-"));
+      try { return await execute({ cwd: root, taskId: "version-probe", instruction: "version only", timeoutMs: 10_000 }, ["--version"]); }
+      finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  });
+  backend.availabilityNote = `container route configured for ${opts.image}; actual version/model smoke required; network disabled, no automatic image pulls`;
+  return backend;
 }

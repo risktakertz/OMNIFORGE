@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { OmniforgeError, WorkspaceLease, type WorkspaceLease as Lease, type ReleaseArtifact, type ProductBlueprint } from "@omniforge/shared-types";
 import { newId, nowIso, slugify, shortHash, safeJoin } from "@omniforge/utils";
-import { ToolGateway } from "@omniforge/tool-gateway";
+import { ToolGateway, registerProvenanceAuthority } from "@omniforge/tool-gateway";
 
 export interface CreateWorkspaceOptions {
   templateId: string;
@@ -276,7 +276,7 @@ export function recordProvenance(
   const dir = join(workspacePath, ".omniforge");
   mkdirSync(dir, { recursive: true });
   const out = join(dir, "provenance.json");
-  writeFileSync(out, JSON.stringify(manifest, null, 2), "utf8");
+    writeFileSync(out, JSON.stringify({ ...manifest, authorityId: registerProvenanceAuthority(workspacePath, manifest.files) }, null, 2), "utf8");
   return out;
 }
 

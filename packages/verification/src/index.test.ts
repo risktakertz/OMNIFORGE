@@ -6,6 +6,7 @@ import { verifyWorkspace, classifyFailure, independentFinalVerification, runProj
 import { LocalNodeBackend } from "@omniforge/agent-runtime";
 import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
 import type { ProductBlueprint } from "@omniforge/shared-types";
+import { recordProvenance } from "@omniforge/workspace-manager";
 
 function bp(criteria: Array<{ id: string; criterion: string; evidenceMethod: string }>): ProductBlueprint {
   return {
@@ -32,6 +33,7 @@ function makeSite(dir: string): string {
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "node tests/ok.test.mjs" } }), "utf8");
   writeFileSync(join(dir, "README.md"), "# fixture site\n", "utf8");
   writeFileSync(join(dir, "tests", "ok.test.mjs"), "console.log('fixture ok');\n", "utf8");
+  recordProvenance(dir, ["package.json", "tests/ok.test.mjs"], new ToolGateway(defaultContext([dir])));
   return dir;
 }
 
@@ -97,6 +99,7 @@ describe("verification", () => {
       mkdirSync(join(dir, "tests"), { recursive: true });
       writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "node tests/bad.test.mjs" } }));
       writeFileSync(join(dir, "tests", "bad.test.mjs"), "process.exit(1);");
+      recordProvenance(dir, ["package.json", "tests/bad.test.mjs"], new ToolGateway(defaultContext([dir])));
       const r = runProjectTests(dir, undefined as never);
       expect(r.status).toBe("failed");
       void existsSync;
