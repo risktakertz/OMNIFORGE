@@ -1,9 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalNodeBackend, OpenCodeBackend } from "./index.js";
-import { ToolGateway, defaultContext } from "@omniforge/tool-gateway";
+import { ToolGateway, defaultContext, registerProvenanceAuthority } from "@omniforge/tool-gateway";
+
+function trustedFixture(root: string, name: string, content: string) {
+  writeFileSync(join(root, name), content);
+  mkdirSync(join(root, ".omniforge"));
+  const files = { [name]: createHash("sha256").update(content).digest("hex") };
+  writeFileSync(join(root, ".omniforge", "provenance.json"), JSON.stringify({ files, authorityId: registerProvenanceAuthority(root, files) }));
+}
 
 describe("agent runtime", () => {
   it("local backend executes commands inside approved cwd", async () => {
@@ -11,7 +19,8 @@ describe("agent runtime", () => {
     try {
       const gw = new ToolGateway(defaultContext([root]));
       const be = new LocalNodeBackend(gw);
-      const r = await be.runTask({ command: "echo hello-omniforge", cwd: root });
+      trustedFixture(root, "hello.mjs", "console.log('hello-omniforge');");
+      const r = await be.runTask({ command: "node hello.mjs", cwd: root });
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("hello-omniforge");
       expect((await be.health()).status).toBe("verified");
@@ -38,7 +47,8 @@ describe("agent runtime", () => {
     try {
       const gw = new ToolGateway(defaultContext([root]));
       const be = new LocalNodeBackend(gw);
-      const r = await be.runTask({ command: "sleep 5", cwd: root, timeoutMs: 300 });
+      trustedFixture(root, "wait.mjs", "setTimeout(() => {}, 5000);");
+      const r = await be.runTask({ command: "node wait.mjs", cwd: root, timeoutMs: 300 });
       expect(r.timedOut).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -48,10 +58,10 @@ describe("agent runtime", () => {
   it("local backend redacts secrets in captured output", async () => {
     const root = mkdtempSync(join(tmpdir(), "of-rt5-"));
     try {
-      writeFileSync(join(root, "leak.sh"), "#!/bin/sh\necho 'token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12'\n", "utf8");
+      trustedFixture(root, "leak.mjs", "console.log('token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12');");
       const gw = new ToolGateway(defaultContext([root]));
       const be = new LocalNodeBackend(gw);
-      const r = await be.runTask({ command: "sh leak.sh", cwd: root });
+      const r = await be.runTask({ command: "node leak.mjs", cwd: root });
       expect(r.stdout).not.toContain("ghp_ABCD");
       expect(r.stdout).toContain("[REDACTED");
     } finally {

@@ -10,15 +10,15 @@
  *  - Failed tasks propagate a typed outcome; downstream tasks become waiting,
  *    never silently run on failed inputs.
  */
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { Evidence, OmniforgeError, type TaskNode, type Evidence as EvidenceT } from "@omniforge/shared-types";
-import { nowIso, newId } from "@omniforge/utils";
+import { nowIso, atomicWriteFile } from "@omniforge/utils";
 import type { ExecutionPlan } from "@omniforge/task-planner";
 import { readyNodes } from "@omniforge/task-planner";
 import type { RunJournal } from "@omniforge/observability";
-import { resolveSandbox, runIsolated, scriptTrust } from "@omniforge/tool-gateway";
+import { runWorkspaceCommand, scriptTrust } from "@omniforge/tool-gateway";
 
 export type TaskTerminalStatus = "passed" | "failed" | "blocked" | "skipped";
 
@@ -111,9 +111,7 @@ export function loadDagState(ctx: DagContext): DagState | null {
 function persistDagState(ctx: DagContext, state: DagState): void {
   state.updatedAt = nowIso();
   const p = statePath(ctx);
-  const tmp = `${p}.${newId("tmp")}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
-  renameSync(tmp, p);
+  atomicWriteFile(p, JSON.stringify(state, null, 2));
 }
 
 function freshState(plan: ExecutionPlan): DagState {
@@ -210,7 +208,8 @@ export async function executeDag(
           const msg = e instanceof OmniforgeError ? e.message : (e as Error).message;
           const timedOut = /timed out/.test(msg);
           const attempts = t.attempts + 1;
-          const status: DagState["tasks"][string]["status"] = timedOut || attempts > node.retryBudget ? "blocked" : "failed";
+          const prerequisite = e instanceof OmniforgeError && ["E_NEEDS_MODEL", "E_BACKEND_BLOCKED", "E_SANDBOX_UNAVAILABLE", "E_AUTHORIZATION_REQUIRED", "E_BUDGET_EXCEEDED"].includes(e.code);
+          const status: DagState["tasks"][string]["status"] = prerequisite || timedOut || attempts > node.retryBudget ? "blocked" : "failed";
           state.tasks[node.id] = { ...state.tasks[node.id]!, attempts, status, message: msg.slice(0, 300), artifacts: [], updatedAt: nowIso() };
           persistDagState(ctx, state);
           outcomes[node.id] = { taskId: node.id, status: status as TaskTerminalStatus, message: msg.slice(0, 300), artifacts: [], evidence: [], durationMs: Date.now() - started, attempts };
@@ -255,7 +254,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, id: string): Promise<T> {
   });
   // the losing timer must be cleared or it keeps the process alive long
   // after the DAG finished (CLI would hang until the last timeout fires)
-  void p.finally(() => timer && clearTimeout(timer));
+  void p.then(() => timer && clearTimeout(timer), () => timer && clearTimeout(timer));
   return Promise.race([p, guard]);
 }
 
@@ -270,14 +269,11 @@ export function runGoverned(
   cwd: string,
   timeoutMs = 60_000
 ): { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean } {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024 });
-  const timedOut = Boolean(r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT");
-  return {
-    exitCode: r.status,
-    stdout: (r.stdout ?? "").slice(0, 200_000),
-    stderr: (r.stderr ?? "").slice(0, 200_000),
-    timedOut,
-  };
+  const cfg = join(cwd, "project.config.json");
+  const templateId = existsSync(cfg) ? String((JSON.parse(readFileSync(cfg, "utf8")) as { templateId?: string }).templateId ?? "") : "";
+  const result = runWorkspaceCommand({ workspacePath: cwd, argv: [cmd, ...args], timeoutMs, templateId, templateRoot: fileURLToPath(new URL("../../../templates", import.meta.url)) });
+  if (result.blocked) throw new OmniforgeError("E_SANDBOX_UNAVAILABLE", result.blocked);
+  return result;
 }
 
 export interface WorkspaceScriptDecision {
@@ -315,32 +311,8 @@ export function runWorkspaceScript(opts: {
     // the compose-time provenance manifest lives in every generated workspace
     provenancePath: join(opts.workspacePath, ".omniforge", "provenance.json"),
   });
-  if (trust.trusted) {
-    const r = runGoverned("node", [opts.scriptRelPath, ...(opts.args ?? [])], opts.workspacePath, opts.timeoutMs ?? 60_000);
-    return { executed: true, isolated: false, trustReason: trust.reason, ...r };
-  }
-  // untrusted generated code: container or refusal — never the host
-  const sandbox = resolveSandbox();
-  if (sandbox.mode === "container" && sandbox.runtime) {
-    const r = runIsolated({
-      image: "node:22-bookworm-slim",
-      argv: ["node", opts.scriptRelPath, ...(opts.args ?? [])],
-      readOnlyMounts: [],
-      workdir: opts.workspacePath,
-      timeoutMs: opts.timeoutMs ?? 60_000,
-    });
-    return { executed: true, isolated: true, trustReason: trust.reason, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
-  }
-  return {
-    executed: false,
-    isolated: false,
-    exitCode: null,
-    stdout: "",
-    stderr: "",
-    timedOut: false,
-    trustReason: trust.reason,
-    blocked: `E_SANDBOX_UNAVAILABLE: script ${opts.scriptRelPath} is not trusted provenance (${trust.reason}) and this host has no container runtime — untrusted code will not run unsandboxed`,
-  };
+  const r = runWorkspaceCommand({ workspacePath: opts.workspacePath, argv: ["node", opts.scriptRelPath, ...(opts.args ?? [])], ...(opts.templateRoot ? { templateRoot: opts.templateRoot } : {}), ...(opts.templateId ? { templateId: opts.templateId } : {}), timeoutMs: opts.timeoutMs ?? 60_000 });
+  return { ...r, executed: !r.blocked, trustReason: trust.reason };
 }
 
 export function evidenceOf(taskId: string, commandOrTool: string, exitStatus: string, summary: string, artifactPaths: string[] = []): EvidenceT {

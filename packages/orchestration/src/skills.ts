@@ -60,7 +60,7 @@ export function invokeSkill(
   } catch {
     /* malformed output handled below */
   }
-  const status = r.status === 0 && parsed.status ? (parsed.status as SkillInvocationResult["status"]) : r.status === 0 ? "passed" : "failed";
+  const status: SkillInvocationResult["status"] = parsed.status === "blocked" ? "blocked" : parsed.status === "skipped" ? "skipped" : r.status === 0 && parsed.status === "passed" ? "passed" : "failed";
   return {
     skillId,
     entrypoint,

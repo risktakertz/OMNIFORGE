@@ -21,6 +21,36 @@ import { nowIso } from "@omniforge/utils";
 import type { ToolGateway } from "@omniforge/tool-gateway";
 import { snapshotManifest, diffManifests } from "@omniforge/agent-runtime";
 import { runWorkspaceScript } from "./dag.js";
+import { executeCodingTask, type CodingExecution } from "./coding.js";
+import { loadBlueprint, acquireLease, releaseLease } from "@omniforge/workspace-manager";
+import { verifyWorkspace, independentFinalVerification } from "@omniforge/verification";
+import { LocalNodeBackend } from "@omniforge/agent-runtime";
+import { ToolGateway as Gateway, defaultContext } from "@omniforge/tool-gateway";
+import { newId } from "@omniforge/utils";
+
+/** Generalized edits use the same staged, budgeted and independently verified engine. */
+export async function modifyWithBackend(opts: { workspacePath: string; repoRoot: string; runsRoot: string; change: string; coding: CodingExecution }) {
+  const understanding = understandWorkspace(opts.workspacePath, opts.repoRoot);
+  const baseline = loadBlueprint(understanding.workspacePath);
+  if (!baseline) throw new OmniforgeError("E_VERIFY_FAILED", "modification requires the original persisted blueprint");
+  const additions = opts.coding.acceptanceCriteria;
+  const ids = new Set(baseline.acceptanceCriteria.map((c) => c.id));
+  if (additions.some((c) => ids.has(c.id))) throw new OmniforgeError("E_INTENT_UNCLEAR", "new modification criteria must have new traceable IDs; original criteria are immutable");
+  const blueprint = { ...baseline, productBrief: `${opts.change}\nOriginal scope: ${baseline.productBrief}`, acceptanceCriteria: [...baseline.acceptanceCriteria, ...additions] };
+  const backend = new LocalNodeBackend(new Gateway(defaultContext([understanding.workspacePath])));
+  const before = await verifyWorkspace({ workspacePath: understanding.workspacePath, blueprint: baseline, backend });
+  if (!before.passed) throw new OmniforgeError("E_VERIFY_FAILED", "original acceptance is failing before modification; repair baseline first");
+  acquireLease(understanding.workspacePath, "backend-modify");
+  const runId = newId("run");
+  try {
+    const result = await executeCodingTask(opts.coding, understanding.workspacePath, blueprint, "t:modify", join(opts.runsRoot, runId));
+    const verification = await verifyWorkspace({ workspacePath: understanding.workspacePath, blueprint, backend });
+    if (!verification.passed || independentFinalVerification(blueprint, verification).verdict !== "pass") throw new OmniforgeError("E_VERIFY_FAILED", "post-commit modification verification failed");
+    // Preserve the original file; record the explicit extension separately for traceability.
+    writeFileSync(join(opts.runsRoot, runId, "modification-contract.json"), JSON.stringify(blueprint, null, 2));
+    return { runId, understanding, ...result, verification };
+  } finally { releaseLease(understanding.workspacePath, "backend-modify"); }
+}
 
 export interface WorkspaceUnderstanding {
   workspacePath: string;

@@ -285,6 +285,9 @@ importers:
       '@omniforge/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@omniforge/tool-gateway':
+        specifier: workspace:*
+        version: link:../tool-gateway
       '@omniforge/utils':
         specifier: workspace:*
         version: link:../utils

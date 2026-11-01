@@ -5,9 +5,10 @@
  * APPROVED_SPEND (default 0) requires approval; destructive operations require
  * approval. Every decision is auditable.
  */
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, readdirSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { resolve, isAbsolute, join, sep } from "node:path";
+import { resolve, isAbsolute, join, sep, dirname, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { OmniforgeError, ToolInvocation, type ToolInvocation as Invocation } from "@omniforge/shared-types";
 import { newId, nowIso, redactSecrets } from "@omniforge/utils";
@@ -160,11 +161,16 @@ export function runIsolated(spec: IsolatedExecSpec, probe: (bin: string, args: s
     );
   }
   const runtime = sandbox.runtime;
+  const containerRef = newId("of");
   const innerWorkdir = spec.containerWorkdir ?? "/workspace";
   const argv = [
     runtime,
     "run",
     "--rm",
+    "--name", containerRef,
+    "--pull", "never",
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
     "--network", spec.allowNetwork ? "bridge" : "none",
     "--user", "nobody",
     "--cpus", "1",
@@ -188,6 +194,7 @@ export function runIsolated(spec: IsolatedExecSpec, probe: (bin: string, args: s
     maxBuffer: 8 * 1024 * 1024,
   });
   const timedOut = Boolean(r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT");
+  if (timedOut) spawnSync(runtime, ["rm", "-f", containerRef], { encoding: "utf8", timeout: 10_000, stdio: "ignore" });
   return {
     exitCode: r.status,
     stdout: redactSecrets(String(r.stdout ?? "").slice(0, max)),
@@ -195,7 +202,7 @@ export function runIsolated(spec: IsolatedExecSpec, probe: (bin: string, args: s
     durationMs: Date.now() - started,
     timedOut,
     runtime,
-    containerRef: `${spec.image}@${newId("ct")}`,
+    containerRef,
   };
 }
 
@@ -229,12 +236,14 @@ export function scriptTrust(opts: {
     }
   };
   const abs = join(resolve(opts.workspacePath), opts.scriptRelPath);
+  const rel = relative(resolve(opts.workspacePath), abs);
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) return { trusted: false, reason: "script escapes workspace", hash: "absent" };
   const hash = hashOf(abs);
   if (hash === "absent") return { trusted: false, reason: "script missing", hash };
   if ((opts.trustedPaths ?? []).some((t) => abs === resolve(t) || abs.startsWith(resolve(t) + sep))) {
     return { trusted: true, reason: "explicitly trusted path (repo-owned)", hash };
   }
-  if (opts.templateRoot && opts.templateId) {
+  if (opts.templateRoot && opts.templateId && /^template:[a-z0-9-]+$/.test(opts.templateId)) {
     const candidate = join(resolve(opts.templateRoot), opts.templateId.replace(/^template:/, ""), opts.scriptRelPath);
     if (hashOf(candidate) === hash) {
       return { trusted: true, reason: `byte-identical to versioned template ${opts.templateId}`, hash };
@@ -242,8 +251,9 @@ export function scriptTrust(opts: {
   }
   if (opts.provenancePath && existsSync(opts.provenancePath)) {
     try {
-      const manifest = JSON.parse(readFileSync(opts.provenancePath, "utf8")) as { files?: Record<string, string> };
-      if (manifest.files?.[opts.scriptRelPath] === hash) {
+      const manifest = JSON.parse(readFileSync(opts.provenancePath, "utf8")) as { files?: Record<string, string>; authorityId?: string };
+      const authority = manifest.authorityId && /^prov_[a-f0-9]+$/.test(manifest.authorityId) ? JSON.parse(readFileSync(join(tmpdir(), "omniforge-trust", `${manifest.authorityId}.json`), "utf8")) as { files?: Record<string, string>; workspace: string } : null;
+      if (authority && resolve(authority.workspace) === resolve(opts.workspacePath) && authority.files?.[opts.scriptRelPath] === hash && manifest.files?.[opts.scriptRelPath] === hash) {
         return { trusted: true, reason: "matches compose-time provenance manifest", hash };
       }
     } catch {
@@ -251,6 +261,67 @@ export function scriptTrust(opts: {
     }
   }
   return { trusted: false, reason: "no provenance match — treat as untrusted generated code (container required)", hash };
+}
+
+/** Detached host authority is outside all generated workspace/container mounts. */
+export function registerProvenanceAuthority(workspace: string, files: Record<string, string>): string {
+  const root = join(tmpdir(), "omniforge-trust");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const authorityId = newId("prov");
+  writeFileSync(join(root, `${authorityId}.json`), JSON.stringify({ workspace: resolve(workspace), files }), { flag: "wx", mode: 0o600 });
+  return authorityId;
+}
+
+/** One boundary for workspace commands, including imports and npm lifecycle scripts. */
+export function runWorkspaceCommand(opts: {
+  workspacePath: string;
+  argv: string[];
+  templateRoot?: string;
+  templateId?: string;
+  timeoutMs?: number;
+  probeSandbox?: (bin: string, args: string[]) => { status: number | null };
+}): { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; blocked?: string; isolated: boolean } {
+  let trusted = true;
+  let count = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8 || count > 5000) { trusted = false; return; }
+    for (const name of readdirSync(dir)) {
+      if (["node_modules", ".git", ".omniforge", "dist-export"].includes(name)) continue;
+      const path = join(dir, name);
+      const st = lstatSync(path);
+      if (st.isSymbolicLink()) { trusted = false; continue; }
+      if (st.isDirectory()) walk(path, depth + 1);
+      else if (/\.(?:[cm]?js|[cm]?ts)$/i.test(name) || name === "package.json") {
+        count++;
+        let scriptRelPath = relative(opts.workspacePath, path).split(sep).join("/");
+        if (scriptRelPath.startsWith("dist/")) {
+          const source = scriptRelPath.replace(/^dist\//, "src/");
+          if (existsSync(join(opts.workspacePath, source)) && readFileSync(path).equals(readFileSync(join(opts.workspacePath, source)))) scriptRelPath = source;
+        }
+        const trust = scriptTrust({ workspacePath: opts.workspacePath, scriptRelPath, ...(opts.templateRoot ? { templateRoot: opts.templateRoot } : {}), ...(opts.templateId ? { templateId: opts.templateId } : {}), provenancePath: join(opts.workspacePath, ".omniforge", "provenance.json") });
+        if (!trust.trusted) trusted = false;
+      }
+    }
+  };
+  walk(opts.workspacePath, 0);
+  // npm can invoke lifecycle hooks/dependencies: it always needs isolation.
+  if (opts.argv[0] !== "node") trusted = false;
+  const targets = opts.argv.slice(opts.argv[1] === "--test" ? 2 : 1);
+  if (!targets.length || targets.some((p) => p.startsWith("-") || isAbsolute(p) || relative(resolve(opts.workspacePath), resolve(opts.workspacePath, p)).startsWith(".."))) trusted = false;
+  if (!trusted) {
+    try {
+      const r = runIsolated({ image: "node:22-bookworm-slim", argv: opts.argv, readOnlyMounts: [], workdir: opts.workspacePath, timeoutMs: opts.timeoutMs ?? 90_000 }, opts.probeSandbox);
+      return { ...r, isolated: true };
+    } catch (error) {
+      if (!(error instanceof OmniforgeError) || error.code !== "E_SANDBOX_UNAVAILABLE") throw error;
+      return { exitCode: null, stdout: "", stderr: "", timedOut: false, isolated: false, blocked: "E_SANDBOX_UNAVAILABLE: workspace code lacks trusted provenance; install Docker/Podman and the node:22-bookworm-slim image" };
+    }
+  }
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  delete env.NODE_TEST_CONTEXT;
+  const r = spawnSync(process.execPath, opts.argv.slice(1), { cwd: opts.workspacePath, env, encoding: "utf8", timeout: opts.timeoutMs ?? 90_000, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024 });
+  return { exitCode: r.status, stdout: redactSecrets(String(r.stdout ?? "")), stderr: redactSecrets(String(r.stderr ?? "")), timedOut: (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT", isolated: false };
 }
 
 /** Binaries that may execute on the host under the allowlist policy. */
@@ -304,14 +375,12 @@ export class ToolGateway {
       // realpath the nearest EXISTING ancestor of the target so dangling
       // symlinks along the path cannot escape the root
       let probe = abs;
-      const suffixes: string[] = [];
-      while (probe !== "/" && !existsSync(probe)) {
-        suffixes.unshift("/" + (probe.split(sep).pop() ?? ""));
-        probe = resolve(probe, "..");
+      while (dirname(probe) !== probe && !existsSync(probe)) {
+        probe = dirname(probe);
       }
       let realTarget: string;
       try {
-        realTarget = existsSync(probe) ? realpathSync(probe) + suffixes.join("") : abs;
+        realTarget = existsSync(probe) ? join(realpathSync(probe), relative(probe, abs)) : abs;
       } catch {
         return false;
       }

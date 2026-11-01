@@ -27,7 +27,7 @@ describe("tool gateway (deterministic policy)", () => {
   it("blocks symlink escapes", () => {
     const outside = join(root, "outside");
     mkdirSync(outside, { recursive: true });
-    symlinkSync(outside, join(root, "workspace", "evil"));
+    symlinkSync(outside, join(root, "workspace", "evil"), process.platform === "win32" ? "junction" : "dir");
     const gw = new ToolGateway(defaultContext([join(root, "workspace")]));
     expect(() => gw.authorize("write", { target: join(root, "workspace", "evil", "file.txt") })).toThrow();
   });

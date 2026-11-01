@@ -112,6 +112,7 @@ describe("authorized toy-fixture pipeline (§9.7 acceptance)", () => {
     const out = mkdtempSync(join(tmpdir(), "of-rea-"));
     const weird = join(out, "weird.mjs");
     writeFileSync(weird, "export const transform = (x) => String(x) + '!';\n");
-    expect(() => analyzePricingFixture({ plan, fixturePath: weird, exportName: "transform", outDir: out })).toThrow(/archetype mismatch/);
+    expect(() => analyzePricingFixture({ plan, fixturePath: weird, exportName: "transform", outDir: out })).toThrow(/E_NEEDS_MODEL/);
+    expect(() => analyzePricingFixture({ plan, fixturePath: FIXTURE, exportName: "stringTransform", outDir: out })).toThrow(/archetype mismatch/);
   });
 });

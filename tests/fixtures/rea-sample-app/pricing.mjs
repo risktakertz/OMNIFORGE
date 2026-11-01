@@ -13,3 +13,6 @@ export function price(qty) {
   if (qty <= 50) return 20 + (qty - 10) * 1.5;
   return 80 + (qty - 50) * 1;
 }
+
+// Deliberate archetype mismatch for the analyzer's numeric-output guard.
+export function stringTransform(value) { return String(value) + "!"; }

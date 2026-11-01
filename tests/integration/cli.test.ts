@@ -132,7 +132,8 @@ describe("omniforge CLI", () => {
     const projects = join(repoRoot, "projects");
     const dirs = readdirSync(projects).filter((d) => d !== ".gitkeep");
     const ws = join(projects, dirs[0]!);
-    const r = run(["modify", ws, "rewrite the checkout engine in Rust"]);
+    const r = run(["modify", ws, "rewrite the checkout engine in Rust"], { allowFailure: true });
+    expect(r.status).toBe(2);
     expect(r.stdout).toMatch(/E_NEEDS_MODEL/);
     expect(r.stdout).toMatch(/deterministic transforms available today/);
   });

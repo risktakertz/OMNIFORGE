@@ -302,6 +302,7 @@ export function describeIntent(intent: Intent): string {
 // Universal goal interpretation (v1.2) — re-exported for the router/CLI.
 export {
   buildGoalSpec,
+  resolveGoalIntent,
   mergeModelGoalSpec,
   decomposeComposite,
   scanExternalInstructions,

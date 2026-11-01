@@ -25,6 +25,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ToolGateway } from "@omniforge/tool-gateway";
 import type { ProjectIntent } from "@omniforge/shared-types";
+import { modelCallDenial } from "@omniforge/model-router";
 
 const PKG = JSON.stringify(
   {
@@ -52,6 +53,10 @@ OPENAI_MODEL=gpt-4o-mini
 GITHUB_TOKEN=
 # Safety
 AGENT_ALLOWED_BINARIES=node,npm,git
+FREE_FIRST_MODE=true
+APPROVED_SPEND=0
+MODEL_APPROVAL_FILE=
+MODEL_LEDGER_FILE=
 `;
 
 const README = `# forge-agent-mvp
@@ -93,12 +98,32 @@ const MODEL_ADAPTER = `// model-adapter.mjs — pluggable planning route for the
 // Offline mode is DETERMINISTIC and honestly labeled MOCK: it produces a
 // real plan from static rules; it does not pretend to be an LLM.
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync } from "node:fs";
+import { modelCallDenial } from "./model-policy.mjs";
 
 export const MODES = { MOCK: "mock", OPENAI_COMPATIBLE: "openai-compatible" };
 
 export function detectMode(env = process.env) {
   if (env.OPENAI_API_KEY) return { mode: MODES.OPENAI_COMPATIBLE, model: env.OPENAI_MODEL || "gpt-4o-mini", baseUrl: env.OPENAI_BASE_URL || "https://api.openai.com/v1" };
   return { mode: MODES.MOCK, model: "deterministic-planner", baseUrl: null };
+}
+
+export async function authorizedModelFetch(route, body) {
+  const approvalFile = process.env.MODEL_APPROVAL_FILE;
+  const ledgerFile = process.env.MODEL_LEDGER_FILE;
+  if (!approvalFile || !ledgerFile) throw new Error("E_BUDGET_EXCEEDED: explicit model approval and durable budget ledger required; keys never authorize spending");
+  const lock = openSync(ledgerFile + ".lock", "wx");
+  try {
+    const policy = JSON.parse(readFileSync(approvalFile, "utf8"));
+    policy.approvedSpend = Math.min(policy.approvedSpend, Number(process.env.APPROVED_SPEND || 0));
+    const ledger = existsSync(ledgerFile) ? JSON.parse(readFileSync(ledgerFile, "utf8")) : { calls: 0, reserved: 0 };
+    const denial = modelCallDenial(policy, { provider: "openai", model: route.model, endpoint: route.baseUrl }, ledger);
+    if (denial) throw new Error("E_BUDGET_EXCEEDED: " + denial);
+    ledger.calls++; ledger.reserved += policy.reservedPerCall;
+    writeFileSync(ledgerFile + ".tmp", JSON.stringify(ledger));
+    renameSync(ledgerFile + ".tmp", ledgerFile);
+  } finally { closeSync(lock); unlinkSync(ledgerFile + ".lock"); }
+  return fetch(route.baseUrl + "/chat/completions", { method: "POST", redirect: "error", signal: AbortSignal.timeout(30000), headers: { "content-type": "application/json", authorization: "Bearer " + process.env.OPENAI_API_KEY }, body: JSON.stringify({ ...body, max_tokens: 1500 }) });
 }
 
 /** Plan a coding task into typed steps. Offline planner covers the common
@@ -133,11 +158,7 @@ async function openaiPlan(route, instruction, files) {
     ],
     temperature: 0,
   };
-  const res = await fetch(route.baseUrl + "/chat/completions", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer " + process.env.OPENAI_API_KEY },
-    body: JSON.stringify(body),
-  });
+  const res = await authorizedModelFetch(route, body);
   if (!res.ok) throw new Error("model route failed: HTTP " + res.status + " (check OPENAI_API_KEY quota/validity)");
   const data = await res.json();
   const raw = data.choices[0].message.content;
@@ -261,7 +282,8 @@ export function run(commandArgs, { cwd, timeoutMs = 60_000, env = process.env } 
   delete cleanEnv.NODE_TEST_CONTEXT;
   delete cleanEnv.VITEST_POOL_ID;
   delete cleanEnv.JEST_WORKER_ID;
-  const r = spawnSync(bin, commandArgs.slice(1), { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
+  const executable = bin === "node" ? process.execPath : bin;
+  const r = spawnSync(executable, commandArgs.slice(1), { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
   const timedOut = Boolean(r.error && r.error.code === "ETIMEDOUT");
   return {
     ok: r.status === 0 && !timedOut,
@@ -351,7 +373,7 @@ const AGENT_CLI = `#!/usr/bin/env node
 // checkpoint. Deterministic by default, model-optional, exactly-once resume.
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { planTask, detectMode } from "../src/model-adapter.mjs";
+import { planTask, detectMode, authorizedModelFetch } from "../src/model-adapter.mjs";
 import { newJob, loadJob, recordStep, stepDone, completeJob, listJobs } from "../src/checkpoint.mjs";
 import { run, runProjectTests } from "../src/sandbox.mjs";
 import { tokenPresent, repoStatus, repoDiff } from "../src/github-adapter.mjs";
@@ -445,17 +467,13 @@ function hash(s) {
 }
 
 async function requestEdit(mode, instruction, file, before) {
-  const res = await fetch(mode.baseUrl + "/chat/completions", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer " + process.env.OPENAI_API_KEY },
-    body: JSON.stringify({
+  const res = await authorizedModelFetch(mode, {
       model: mode.model,
       messages: [
         { role: "system", content: "You are a coding agent. Return ONLY the full corrected file content, no markdown fences, no prose." },
         { role: "user", content: "Task: " + instruction + "\\n\\nFile " + file + ":\\n" + before },
       ],
       temperature: 0,
-    }),
   });
   if (!res.ok) throw new Error("model edit failed: HTTP " + res.status);
   const data = await res.json();
@@ -540,6 +558,8 @@ test("sandbox enforces the allowlist and refuses shell strings", () => {
     assert.equal(meta.ok, false, "metacharacter argv refused");
     const good = run(["node", "--version"], { cwd: dir, env: {} });
     assert.equal(good.ok, true);
+    const withoutPath = run(["node", "--version"], { cwd: dir, env: { PATH: "" } });
+    assert.equal(withoutPath.ok, true, "selected Node runtime must not depend on ambient PATH");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -622,6 +642,7 @@ export function composeAgentMvp(workspacePath: string, intent: ProjectIntent, ga
     "package.json": PKG,
     "bin/agent.mjs": AGENT_CLI,
     "src/model-adapter.mjs": MODEL_ADAPTER,
+    "src/model-policy.mjs": `export const modelCallDenial = ${modelCallDenial.toString()};\n`,
     "src/checkpoint.mjs": CHECKPOINT,
     "src/sandbox.mjs": SANDBOX,
     "src/github-adapter.mjs": GITHUB_ADAPTER,

@@ -121,7 +121,7 @@ const SCOPES: Record<string, KindScope> = {
     excluded: BASE_EXCLUDED,
     criteria: [
       { id: "AC1", criterion: "Rendered dashboard contains dist/index.html", evidenceMethod: "file-exists:dist/index.html" },
-      { id: "AC2", criterion: "Role boundary logic exists and is testable", evidenceMethod: "file-exists:dist/roles-logic.js" },
+      { id: "AC2", criterion: "Role boundary logic exists and is testable", evidenceMethod: "file-exists:dist/dashboard-logic.js" },
       { id: "AC3", criterion: "Project's own test suite passes (filters, role boundaries)", evidenceMethod: "run-project-tests" },
       { id: "AC4", criterion: "No secrets present in rendered output", evidenceMethod: "no-secrets" },
     ],

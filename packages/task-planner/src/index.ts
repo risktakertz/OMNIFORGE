@@ -58,7 +58,7 @@ export function planExecution(
   opts: PlanOptions = {}
 ): ExecutionPlan {
   const nodes: Node[] = [];
-  const needsWorkspace = intent.operation !== "analyze";
+  const needsWorkspace = true;
   nodes.push(node("t:intake", "intake", [], ["skill:omniforge"], ["journal"], opts));
   nodes.push(node("t:permission-check", "permission-check", ["t:intake"], [], ["policy-decision"], opts));
   nodes.push(node("t:interpret", "interpret", ["t:intake"], ["skill:omniforge"], ["intent"], opts));

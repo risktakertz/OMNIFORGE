@@ -37,6 +37,27 @@ report`. `verify` branches conditionally: passing runs continue to `approve`;
 failures go to `repair` (budget of 2 attempts, then the run ends blocked),
 which loops back to `execute`.
 
+The resolved GoalSpec feeds a validated compatibility intent, then product or
+work blueprints, routing and the executable DAG. Original request, intake
+identity, operation and policy authority are retained. Novel coding uses a
+verified CodingBackend with an enforced execution boundary, shared durable model
+budget, staged source tree, measured diff, scoped writes and independent
+acceptance before applying changes. The same engine handles generalized edits
+and backend repairs. An injected runtime proves these contracts in tests; a real
+model/container smoke is a separate prerequisite-gated milestone.
+
+Structural analysis uses a work blueprint and the same workspace/execute/verify/
+package DAG. It records source rights, observations, hashes, inference limits and
+exportable reports without generating a site. Unsupported analyses and composite
+goals without per-component dependency contracts have explicit typed blockers.
+
+All workspace commands, including verification suites and repair scripts, use
+one provenance/isolation gate. Host trust needs versioned template identity or a
+detached authority record; workspace manifests cannot authorize themselves.
+Every verify/repair terminal branch reaches report. CLI failure exits, durable
+run outcomes and delivery gates agree; a green acceptance check cannot outweigh
+a failed DAG task. Run locks prevent simultaneous resume side effects.
+
 ## Durable state and isolation
 
 Every node appends to a per-run `RunJournal`; `FileCheckpointSaver` persists

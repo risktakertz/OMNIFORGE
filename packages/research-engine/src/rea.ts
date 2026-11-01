@@ -16,7 +16,8 @@
  * (§9.5). Analysis completes WITHOUT generating an application when no
  * synthesis strategy applies — typed, never faked.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { AnalysisPlan, OmniforgeError, type AnalysisPlan as Plan } from "@omniforge/shared-types";
@@ -115,9 +116,12 @@ export interface FixtureAnalysisResult {
 
 function loadFixtureFunction(fixturePath: string, exportName: string): (x: number) => number {
   const abs = resolve(fixturePath);
+  const trusted = fileURLToPath(new URL("../../../tests/fixtures/rea-sample-app/pricing.mjs", import.meta.url));
+  if (abs !== resolve(trusted)) throw new OmniforgeError("E_NEEDS_MODEL", "this host probe supports only the versioned pricing fixture; arbitrary source execution requires an isolated specialized analyzer");
   if (!existsSync(abs)) {
     throw new OmniforgeError("E_CAPABILITY_MISSING", `analysis fixture not found: ${fixturePath}`, {});
   }
+  if (realpathSync(abs) !== abs) throw new OmniforgeError("E_GATEWAY_PATH_ESCAPE", "analysis fixture must not be a symlink");
   // repo-owned fixture (versioned with the codebase) — trusted content
   const mod = requireFromHere(abs) as Record<string, unknown>;
   const fn = mod[exportName];
@@ -170,6 +174,8 @@ export function analyzePricingFixture(opts: {
   /** original implementation source (clean-room) is emitted by the pipeline */
   validateUpTo?: number;
 }): FixtureAnalysisResult {
+  planAnalysis({ target: opts.plan.target, format: opts.plan.format, rightsBasis: opts.plan.rightsBasis, rightsEvidence: opts.plan.rightsEvidence, expectedArtifacts: opts.plan.expectedArtifacts });
+  if (!Number.isFinite(opts.probeStep ?? 5) || (opts.probeStep ?? 5) <= 0 || !Number.isFinite(opts.probeMax ?? 100) || (opts.probeMax ?? 100) < 1 || (opts.probeMax ?? 100) / (opts.probeStep ?? 5) > 10000 || (opts.validateUpTo ?? 150) > 10000) throw new OmniforgeError("E_BUDGET_EXCEEDED", "behavior probes require finite positive steps and at most 10000 cases");
   const fn = loadFixtureFunction(opts.fixturePath, opts.exportName);
   const step = opts.probeStep ?? 5;
   const max = opts.probeMax ?? 100;
